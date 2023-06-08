@@ -1,0 +1,28 @@
+{
+  "name": "MarsBot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.2.5",
+    "@types/string-similarity": "^4.0.0",
+    "esbuild": "^0.17.19",
+    "esbuild-register": "^3.4.2",
+    "tsup": "^6.7.0"
+  },
+  "dependencies": {
+    "@types/lokijs": "^1.5.8",
+    "big-integer": "^1.6.51",
+    "input": "^1.0.1",
+    "lokijs": "^1.5.12",
+    "ocr-space-api-wrapper": "^2.3.0",
+    "sharp": "^0.32.1",
+    "sharp-phash": "^2.1.0",
+    "string-similarity": "^4.0.4",
+    "telegram": "^2.17.4"
+  },
+  "scripts": {
+    "start": "node -r esbuild-register ./src/index.ts",
+    "test": "node -r esbuild-register ./src/test.ts"
+  }
+}
