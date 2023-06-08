@@ -55,6 +55,8 @@ const createTGClient = async () => {
 
     const msgCollection = getCollection('messages');
 
+    writeFileSync('./1.json', JSON.stringify(await client.getMessages(CHANNEL_ID, { limit: 100 })))
+
     const processMessages = async () => {
         const msgs = ((await client.getMessages(CHANNEL_ID, { limit: 30 })).sort((a, b) => a.date - b.date));
         for (const messageIndex in msgs) {
@@ -97,13 +99,14 @@ const createTGClient = async () => {
                     const thisResult = { id: message.id, hash: res };
                     collection.insertOne(thisResult);
                     for (const before of collection.find({ id: { $ne: message.id } })) {
-                        
+                        if(msgs.find(m => m.id === before.id)?.groupedId === message.groupedId) continue;
+
                         const checkRes: {
                             isDuplicated: boolean,
                             confidence: number
                         } = await checkers[checker].checkDuplicate(res, before.hash);
 
-                        
+
 
                         if (checkRes.isDuplicated) {
                             duplicateResults.push({
@@ -128,7 +131,7 @@ const createTGClient = async () => {
                 console.log("🕊️🕊️🕊️ Duplicate detected", message.id, 'DupMsg: ', dupMsg)
                 await client.sendMessage(CHANNEL_ID, {
                     message: dupMsg,
-                    commentTo: message.id,
+                    commentTo: replyToMsg.id,
                     parseMode: 'md',
                 })
             }
