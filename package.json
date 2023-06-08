@@ -15,6 +15,7 @@
     "big-integer": "^1.6.51",
     "input": "^1.0.1",
     "lokijs": "^1.5.12",
+    "magic-bytes.js": "^1.0.14",
     "ocr-space-api-wrapper": "^2.3.0",
     "sharp": "^0.32.1",
     "sharp-phash": "^2.1.0",
@@ -23,6 +24,7 @@
   },
   "scripts": {
     "start": "node -r esbuild-register ./src/index.ts",
-    "test": "node -r esbuild-register ./src/test.ts"
+    "test": "node -r esbuild-register ./src/test.ts",
+    "keep": "pm2 start ./src/index.ts --interpreter=\"node\" --node-args=\"-r esbuild-register\""
   }
 }
