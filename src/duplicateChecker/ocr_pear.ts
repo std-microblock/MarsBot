@@ -4,19 +4,22 @@ import { compareTwoStrings } from 'string-similarity';
 import filetype from 'magic-bytes.js'
 import { readFileSync } from 'fs';
 
-import puppeteer from 'puppeteer';
+import puppeteer, { Browser } from 'puppeteer';
 import { RequestInterceptionManager } from 'puppeteer-intercept-and-modify-requests'
 
 let recognize: (img: string) => Promise<string> = (img) => { throw Error("Not initialized") };
-
-(async () => {
-    const browser = await puppeteer.launch({
+let browser: Browser | undefined;
+async function initializeOCR() {
+    if(browser) browser.close();
+    browser = undefined
+    browser = await puppeteer.launch({
         headless: false
     });
+
     const page = await browser.newPage();
     page.setViewport({
-        width: 1920,
-        height: 1080
+        width: 1000,
+        height: 800
     })
     
     const client = await page.target().createCDPSession()
@@ -52,7 +55,7 @@ let recognize: (img: string) => Promise<string> = (img) => { throw Error("Not in
                 rs(antOcr.RecoDataList[0].text);
                 // rs(antOcr.RecoDataList[0].detail.map(v=>v.text).join('\\n'));
             }
-        }),new Promise((_,rj)=>setTimeout(rj,5000,'timeout'))])
+        }),new Promise((_,rj)=>setTimeout(rj,20000,'timeout'))])
     }
 
     window.recognize=recognize;`);
@@ -61,7 +64,10 @@ let recognize: (img: string) => Promise<string> = (img) => { throw Error("Not in
         // @ts-ignore
         return page.evaluate(async (img) => await window.recognize(img), img) as any
     }
-})();
+}
+
+
+initializeOCR();
 
 export const generate = async ({
     message,
@@ -81,6 +87,7 @@ export const generate = async ({
             return ocrResult;
         } catch (e) {
             console.warn("[ OCR ] Error", e);
+            initializeOCR();
             await new Promise(rs => setTimeout(rs, 5000));
         }
     }
