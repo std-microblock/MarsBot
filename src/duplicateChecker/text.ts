@@ -12,7 +12,7 @@ export const checkDuplicate = async (s1: string, s2: string) => {
     const d = compareTwoStrings(s1, s2);
     const isOneLine = (txt) => !txt.includes('\n')
     return {
-        isDuplicated: false, //d > 0.8 && !isOneLine(s1) && !isOneLine(s2),
+        isDuplicated: d > 0.8 && !isOneLine(s1) && !isOneLine(s2),
         confidence: (d - 0.8) / 0.2
     }
 }

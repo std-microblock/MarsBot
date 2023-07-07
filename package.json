@@ -17,6 +17,8 @@
     "lokijs": "^1.5.12",
     "magic-bytes.js": "^1.0.14",
     "ocr-space-api-wrapper": "^2.3.0",
+    "puppeteer": "^20.8.0",
+    "puppeteer-intercept-and-modify-requests": "^1.2.2",
     "sharp": "^0.32.1",
     "sharp-phash": "^2.1.0",
     "string-similarity": "^4.0.4",
