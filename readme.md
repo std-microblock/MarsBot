@@ -1,6 +1,10 @@
 # MarsBot
 ## Telegram 频道查重 Bot
 
+![image](https://github.com/MicroCBer/MarsBot/assets/66859419/dc0e6fbb-7706-4e8b-b90f-0a078501eb26)
+
+### 倡导和平有爱共处，反对建政开盒互怼
+
 ### 安装
 1. Clone 仓库
 2. 安装 Node.js
