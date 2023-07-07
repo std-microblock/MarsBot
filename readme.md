@@ -8,7 +8,7 @@
 4. 安装库文件(在项目文件夹内)：`yarn`
 
 ### 配置
-1. OCR_KEYS: 在 https://ocr.space/OCRAPI 注册，并填入运行文件夹下（一般就在项目文件夹下）的 `OCR_KEYS` 文件内，每行一个，支持负载均衡。
+1. ~~OCR_KEYS: 在 https://ocr.space/OCRAPI 注册，并填入运行文件夹下（一般就在项目文件夹下）的 `OCR_KEYS` 文件内，每行一个，支持负载均衡。~~ 已改为使用 PearOCR（AntOCR） 本地识别
 2. 登录 SelfBot：打开命令行，输入 `yarn start`，按提示登录
 
 ### 运行（保活）
