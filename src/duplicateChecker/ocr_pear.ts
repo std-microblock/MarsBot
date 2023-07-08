@@ -10,7 +10,7 @@ import { RequestInterceptionManager } from 'puppeteer-intercept-and-modify-reque
 let recognize: (img: string) => Promise<string> = (img) => { throw Error("Not initialized") };
 let browser: Browser | undefined;
 async function initializeOCR() {
-    if(browser) browser.close();
+    if (browser) browser.close();
     browser = undefined
     browser = await puppeteer.launch({
         headless: false
@@ -21,7 +21,7 @@ async function initializeOCR() {
         width: 1000,
         height: 800
     })
-    
+
     const client = await page.target().createCDPSession()
     const interceptManager = new RequestInterceptionManager(client as any);
 
@@ -81,9 +81,10 @@ export const generate = async ({
     while (1) {
         try {
             const res = await recognize(`data:${filetype(mediaBuf)[0].mime?.replace('jpeg', 'jpg')};base64,${(mediaBuf.toString('base64'))}`);
-            console.log(res)
-            const ocrResult = res.trim() || 'No Result';
+            const ocrResult = res?.trim() || 'No Result';
             console.log('[ OCR ] Result:', ocrResult);
+            
+            if (ocrResult.length < 10) return 'No Result';
             return ocrResult;
         } catch (e) {
             console.warn("[ OCR ] Error", e);
@@ -96,7 +97,7 @@ export const generate = async ({
 export const checkDuplicate = async (s1: string, s2: string) => {
     const d = compareTwoStrings(s1, s2);
     return {
-        isDuplicated: d > 0.87 && !(s1 === 'No Result') && !(s2 === 'No Result'),
+        isDuplicated: d > 0.8 && !(s1 === 'No Result') && !(s2 === 'No Result'),
         confidence: (d - 0.8) / 0.2
     }
 }

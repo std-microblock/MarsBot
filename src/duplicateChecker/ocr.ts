@@ -32,7 +32,7 @@ export const generate = async ({
 export const checkDuplicate = async (s1: string, s2: string) => {
     const d = compareTwoStrings(s1, s2);
     return {
-        isDuplicated: d > 0.87 && !(s1 === 'No Result') && !(s2 === 'No Result'),
+        isDuplicated: d > 0.80 && !(s1 === 'No Result') && !(s2 === 'No Result'),
         confidence: (d - 0.8) / 0.2
     }
 }

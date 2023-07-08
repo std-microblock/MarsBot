@@ -172,8 +172,10 @@ interface DuplicateResult {
     const getMessages = async (id) => ((await client.getMessages(id, { limit: 30, })).sort((a, b) => a.date - b.date));
 
     // writeFileSync('./1.json', JSON.stringify(await getMessages('xinjingmars'),null,4))
-    client.addEventHandler(async ({ message }) => {
-        // @ts-ignore
+    const messageQueue: [Api.Message, TelegramClient][] = [];
+    let busy = false;
+
+    async function processMessage(message, client) {
         const channelId = message.peerId.channelId.toString();
 
         console.log(`[MSG ${channelId}]`, message.text)
@@ -188,9 +190,16 @@ interface DuplicateResult {
 
             for (const { duplicateResults, message: msg, msgId } of await checkMessages([message], client)) {
                 if (!duplicateResults.some(r => r.before.id.startsWith('1434817225'))) continue;
-                const dupMsg = `<u>火星报速讯！</u>\n<a href="https://t.me/c/${msgId.replace("::", "/")}">原消息</a>\n\n${duplicateResults
-                    .map(r =>
-                        ` - <b>${r.checker}</b> <a href="https://t.me/c/${r.before.id.replace("::", "/")}">检出 ${Math.ceil(r.confidence * 100)}%</a>`)
+
+                const dupMap = {};
+                for (const res of duplicateResults) {
+                    dupMap[res.before.id] ??= [];
+                    dupMap[res.before.id].push(res);
+                }
+                const dupMsg = `<u><b>火星报速讯！</b></u>\n<a href="https://t.me/c/${msgId.replace("::", "/")}">原消息</a>\n\n${Object.entries(dupMap)
+                    .map(([msgId, dups]: any) =>
+                        ` + <a href="https://t.me/c/${msgId.replace("::", "/")}">${msgId.replace('1434817225', "心惊报")}</a>
+${dups.map(r => `    - <b>${r.checker}</b> 检出 <b>${Math.ceil(r.confidence * 100)}%</b>`).join('\n')}`)
                     .join('\n')}`;
 
                 console.log(dupMsg)
@@ -206,7 +215,21 @@ interface DuplicateResult {
                 })
             }
         }
+    }
 
+    const checkQueue = async () => {
+        if (busy) return;
+        busy = true;
+        while (messageQueue.length > 0) {
+            const [message, client] = messageQueue.shift()!;
+            await processMessage(message, client);
+        }
+        busy = false;
+    }
+
+    client.addEventHandler(async ({ message }) => {
+        messageQueue.push([message, client]);
+        checkQueue();
     }, new NewMessage({
         chats: [
             CHANNEL_ID, "xinjingmars", "1601858692"
@@ -218,14 +241,17 @@ interface DuplicateResult {
     (async () => {
         while (1) {
             const lastId = existsSync('lastId.txt') ? parseInt(readFileSync('lastId.txt', 'utf-8')!) : undefined;
-            if(lastId && lastId<30){
+            if (lastId && lastId < 30) {
                 console.log("[ LiftUp ] Finished!");
                 break
             }
             if (lastId)
                 console.log("[ LiftUp ] Checking to", lastId, 'ETA: ', Math.round(lastId / 50) + 'mins');
             const messages = ((await client2.getMessages(CHANNEL_ID, { limit: 50, offsetId: lastId })).sort((a, b) => a.date - b.date))
-            await checkMessages(messages, client2);
+
+            messageQueue.push(...messages.map(m => [m, client2] as [Api.Message, TelegramClient]));
+            checkQueue();
+            
             writeFileSync('lastId.txt', messages[0].id.toString());
             await new Promise(rs => setTimeout(rs, 60 * 1000));
         }

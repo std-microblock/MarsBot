@@ -15,7 +15,7 @@ export const generate = async ({
 export const checkDuplicate = async (hash1: string, hash2: string) => {
     const d = dist(hash1, hash2);
     return {
-        isDuplicated: d < 10,
-        confidence: (10 - d) / 10
+        isDuplicated: d < 15,
+        confidence: (15 - d) / 15
     }
 }
