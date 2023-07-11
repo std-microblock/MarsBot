@@ -78,12 +78,12 @@ export const generate = async ({
     const mediaBuf = (await getMedia()) as unknown as Buffer;
     console.log("[ OCR ] Recognizing..");
 
-    while (1) {
+    for(let attempt=0;attempt<2;attempt++){
         try {
             const res = await recognize(`data:${filetype(mediaBuf)[0].mime?.replace('jpeg', 'jpg')};base64,${(mediaBuf.toString('base64'))}`);
             const ocrResult = res?.trim() || 'No Result';
             console.log('[ OCR ] Result:', ocrResult);
-            
+
             if (ocrResult.length < 10) return 'No Result';
             return ocrResult;
         } catch (e) {
@@ -92,6 +92,8 @@ export const generate = async ({
             await new Promise(rs => setTimeout(rs, 5000));
         }
     }
+    console.error("[ OCR ] Failed to recognize");
+    return 'No Result'
 }
 
 export const checkDuplicate = async (s1: string, s2: string) => {

@@ -11,8 +11,13 @@
     "tsup": "^6.7.0"
   },
   "dependencies": {
+    "@techstark/opencv-js": "^4.7.0-release.1",
     "@types/lokijs": "^1.5.8",
+    "@u4/opencv4nodejs": "^6.5.2",
     "big-integer": "^1.6.51",
+    "bmp-js": "^0.1.0",
+    "canvas": "^2.11.2",
+    "image-type": "^5.2.0",
     "input": "^1.0.1",
     "lokijs": "^1.5.12",
     "magic-bytes.js": "^1.0.14",
@@ -21,6 +26,7 @@
     "puppeteer-intercept-and-modify-requests": "^1.2.2",
     "sharp": "^0.32.1",
     "sharp-phash": "^2.1.0",
+    "ssim.js": "^3.5.0",
     "string-similarity": "^4.0.4",
     "telegram": "^2.17.4"
   },
@@ -28,5 +34,8 @@
     "start": "node -r esbuild-register ./src/index.ts",
     "test": "node -r esbuild-register ./src/test.ts",
     "keep": "pm2 start ./src/index.ts --interpreter=\"node\" --node-args=\"-r esbuild-register\""
+  },
+  "opencv4nodejs": {
+    "disableAutoBuild": "1"
   }
 }
