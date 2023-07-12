@@ -7,6 +7,7 @@ import { getMe } from 'telegram/client/users';
 import extractFrames from "ffmpeg-extract-frames"
 import { join } from 'path';
 import { mkdir, readdir } from 'fs/promises';
+import { existsSync } from 'fs';
 
 export const generate = async ({
     message,
@@ -19,18 +20,20 @@ export const generate = async ({
 
     const media = await getMediaPath();
     if (media) {
-        await mkdir(media + "-frames");
-        await extractFrames({
-            input: media,
-            output: media + "-frames/%d.png",
-            numFrames: 30
-        });
+        if (!existsSync(media + "-frames")) {
+            await mkdir(media + "-frames");
+            await extractFrames({
+                input: media,
+                output: media + "-frames/%d.png",
+                numFrames: 30
+            });
+        }
 
         const mediaFrames = await readdir(media + "-frames");
         const hashes: string[] = [];
         if (mediaFrames.length > 0) {
             for (const frame of mediaFrames) {
-                const hash = await phash(join(media, frame));
+                const hash = await phash(join(media + "-frames", frame));
                 hashes.push(hash);
             }
         }
@@ -39,8 +42,13 @@ export const generate = async ({
 }
 
 export const checkDuplicate = async (hash1: string[], hash2: string[], ctx: CheckerCheckContext) => {
+    if(!hash1 || !hash2 || hash1.length !== hash2.length) return {
+        isDuplicated: false,
+        confidence: 0
+    }
+
     let minDistance = Number.MAX_SAFE_INTEGER, minDistanceProgress = -1;
-    for (const i in hash1) {
+    for (const i in hash2) {
         const d = dist(hash1[i], hash2[i]);
         if (d < minDistance) {
             minDistance = d;

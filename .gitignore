@@ -9,3 +9,4 @@ marsBot.db
 media
 venv
 __pycache__
+lastId.txt
