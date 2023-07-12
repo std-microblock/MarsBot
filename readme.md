@@ -1,7 +1,20 @@
 # MarsBot
 ## Telegram 频道查重 Bot
 
+
+#### 纯 phash
+
 ![image](https://github.com/MicroCBer/MarsBot/assets/66859419/dc0e6fbb-7706-4e8b-b90f-0a078501eb26)
+
+#### AI 字符串表意匹配
+
+![image](https://github.com/MicroCBer/MarsBot/assets/66859419/9424e3c8-c3d2-485b-9811-c9e947503a3c)
+
+#### OpenCV 特征提取匹配
+
+![image](https://github.com/MicroCBer/MarsBot/assets/66859419/3793c6d0-290b-40a9-a827-bd0793019f68)
+
+
 
 ### 倡导和平有爱共处，反对建政开盒互怼
 
