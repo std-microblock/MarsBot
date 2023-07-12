@@ -7,3 +7,5 @@ OCR_KEYS
 marsBot.db
 1.json
 media
+venv
+__pycache__

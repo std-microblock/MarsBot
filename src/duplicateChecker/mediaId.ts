@@ -5,7 +5,7 @@ export const generate = ({
     client,
     getMedia
 }: CheckerGenerateContext) => {
-    for (const mediaSlot in message.media) {
+    for (const mediaSlot in message?.media) {
         if (message.media[mediaSlot].id)
             return `${mediaSlot}-id-${message.media[mediaSlot].id}`;
     }

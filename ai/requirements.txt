@@ -1,0 +1,7 @@
+Flask==2.2.2
+Flask==2.3.2
+opencv_python==4.8.0.74
+sentence_transformers==2.2.2
+transformers==4.26.0
+transformers==4.27.1
+transformers==4.30.2

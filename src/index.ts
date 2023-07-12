@@ -80,12 +80,12 @@ interface DuplicateResult {
 
     const msgCollection = getCollection('messages');
 
-    const getMessageById: ((id: string, tg: TelegramClient) => any) = async (id, tg = client) => { 
-        return await tg.getMessages(new Api.PeerChannel({channelId:bigInt(id.split("::")[0])}), { limit: 1, ids: [parseInt(id.split("::")[1])] });
+    const getMessageById: ((id: string, tg: TelegramClient) => any) = async (id, tg = client) => {
+        return (await tg.getMessages(new Api.PeerChannel({ channelId: bigInt(id.split("::")[0]) }), { limit: 1, ids: [parseInt(id.split("::")[1])] }))[0];
         const cachedMsg = msgCollection.findOne({ id: { $eq: id } });
         if (cachedMsg) return cachedMsg;
         else {
-            const msgs = await tg.getMessages(new Api.PeerChannel({channelId:bigInt(id.split("::")[0])}), { limit: 1, ids: [parseInt(id.split("::")[1])] });
+            const msgs = await tg.getMessages(new Api.PeerChannel({ channelId: bigInt(id.split("::")[0]) }), { limit: 1, ids: [parseInt(id.split("::")[1])] });
             msgCollection.insert({
                 ...msgs[0],
                 id: id,
@@ -150,7 +150,7 @@ interface DuplicateResult {
                         collection.insertOne(thisResult);
                         for (const before of collection.find({ id: { $ne: msgId } })) {
                             // if(msgs.find(m => m.id === before.id)?.groupedId === message.groupedId) continue;
-
+                            if(!before.id.startsWith("1434817225")) continue;
                             const ctx = {
                                 before() { return getMessageById(before.id, client) },
                                 this() { return message },
@@ -159,7 +159,8 @@ interface DuplicateResult {
                             }
                             const checkRes: {
                                 isDuplicated: boolean,
-                                confidence: number
+                                confidence: number,
+                                message?: string
                             } = await checkers[checker].checkDuplicate(res, before.hash, ctx);
 
                             if (checkRes.isDuplicated || returnFalseChecks) {
@@ -247,7 +248,7 @@ interface DuplicateResult {
                     }));
                 }
 
-                const msg = `[ 本消息将会在 3 分钟后删除 ]\n找到 ${results.length} 条结果 (Page ${page})\n\n` + results.slice((page - 1) * 10, page * 10).map((r, i) => `${page * 10 - 10 + i + 1}. (${r.checker}) ${getIdLink(r.id)}:\t
+                const msg = `[ 本消息将会在 3 分钟后删除 ]\n找到 ${results.length} 条结果 (Page ${page})\n\n` + results.slice((page - 1) * 10, page * 10).map((r, i) => `${page * 10 - 10 + i + 1}. (${r.checker}) ${r.message ?? ''}${getIdLink(r.id)}:\t
 ${r.hash.length > 60 ? r.hash.replace(/\n/g, '').slice(0, 60) + '...' : r.hash.replace(/\n/g, ' ')}`).join('\n\n')
                 const msgSent = await client.sendMessage(message.peerId, {
                     message: msg,
@@ -316,7 +317,7 @@ ${r.hash.length > 60 ? r.hash.replace(/\n/g, '').slice(0, 60) + '...' : r.hash.r
                 const dupMsg = `<u> <b>火星报速讯！</b></u>\n <a href="https://t.me/c/${msgId.replace("::", "/")}">原消息</a>\n\n${Object.entries(dupMap)
                     .map(([msgId, dups]: any) =>
                         ` + ${getIdLink(msgId)}
-${dups.map(r => `    - <b>${r.checker}</b> 检出 <b>${Math.ceil(r.confidence * 100)}%</b>`).join('\n')}`)
+${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ceil(r.confidence * 100)}%</b>`).join('\n')}`)
                     .join('\n')
                     } `;
 
