@@ -56,7 +56,7 @@ export const checkDuplicate = async (s1: string, s2: string) => {
             }
         }
     }
-    
+
     return {
         isDuplicated: false,
         confidence: (d - 0.8) / 0.2

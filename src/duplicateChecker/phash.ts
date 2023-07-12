@@ -1,18 +1,9 @@
 import { Api, TelegramClient } from 'telegram'
-import { loadImage, Image } from "canvas";
-import { Canvas } from 'canvas';
 import phash from "sharp-phash"
 import dist from "sharp-phash/distance"
 import { CheckerCheckContext, CheckerGenerateContext } from './types';
 import { MARS_PY_API_BASE } from '../api';
 
-const getImageData = (img: Image) => {
-    const { width, height } = img;
-    const canvas = new Canvas(width, height);
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0);
-    return ctx.getImageData(0, 0, width, height);
-}
 
 export const generate = async ({
     message,
@@ -20,7 +11,7 @@ export const generate = async ({
     getMedia
 }: CheckerGenerateContext) => {
     if (message.media?.className !== 'MessageMediaPhoto') return;
-    return phash(await client.downloadMedia(message, {}))
+    return phash(await getMedia())
 }
 
 export const checkDuplicate = async (hash1: string, hash2: string, ctx: CheckerCheckContext) => {

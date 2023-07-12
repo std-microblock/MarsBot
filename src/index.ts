@@ -6,8 +6,9 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import Loki from 'lokijs'
 import * as phash from "./duplicateChecker/phash";
 import * as text from "./duplicateChecker/text";
-import * as ocr from "./duplicateChecker/ocr_pear";
+import * as ocr from "./duplicateChecker/ocr-pear";
 import * as mediaId from "./duplicateChecker/mediaId";
+import * as videoKFPhash from "./duplicateChecker/video-keyframe-phash";
 import BigInteger from "big-integer";
 import { spawn } from "child_process";
 import { readFile, writeFile } from "fs/promises";
@@ -31,7 +32,8 @@ const checkers = {
     mediaId,
     phash,
     text,
-    ocr
+    ocr,
+    videoKFPhash
 }
 
 const createTGClient: (session?: string) => Promise<TelegramClient> = async (session = "./SESSION") => {
@@ -94,20 +96,28 @@ interface DuplicateResult {
         }
     }
 
-    const getMediaCached = async (msg: Api.Message, tg: TelegramClient = client) => {
-        const mediaId = checkers.mediaId.generate({ message: msg, client, getMedia: async () => undefined });
+    const getMediaCachedPath = async (msg: Api.Message, tg: TelegramClient = client) => {
+        const mediaId = checkers.mediaId.generate({
+            message: msg, client,
+            getMedia: async () => undefined,
+            getMediaPath: async () => undefined
+        });
         if (!mediaId) return undefined;
         // find in __dirname/media
         const mediaPath = `./media/${mediaId}`;
-        if (existsSync(mediaPath)) return await readFile(mediaPath);
-        else {
+        if (!existsSync(mediaPath)) {
             const media = await tg.downloadMedia(msg, {});
             if (media)
                 await writeFile(mediaPath, media);
-            return media;
         }
+        return mediaPath;
     }
 
+    const getMediaCached = async (msg: Api.Message, tg: TelegramClient = client) => {
+        const path = await getMediaCachedPath(msg, tg);
+        if (!path) return;
+        return await readFile(path);
+    }
 
     const checkMessages = async (msgs, client: TelegramClient, returnFalseChecks = false) => {
         const allDuplicated: {
@@ -140,6 +150,9 @@ interface DuplicateResult {
                         client,
                         getMedia() {
                             return getMediaCached(message, client);
+                        },
+                        getMediaPath() {
+                            return getMediaCachedPath(message, client);
                         }
                     });
 
@@ -150,12 +163,13 @@ interface DuplicateResult {
                         collection.insertOne(thisResult);
                         for (const before of collection.find({ id: { $ne: msgId } })) {
                             // if(msgs.find(m => m.id === before.id)?.groupedId === message.groupedId) continue;
-                            if(!before.id.startsWith("1434817225")) continue;
+                            if (!before.id.startsWith("1434817225")) continue;
                             const ctx = {
                                 before() { return getMessageById(before.id, client) },
                                 this() { return message },
                                 client,
-                                getMediaCached
+                                getMediaCached,
+                                getMediaCachedPath
                             }
                             const checkRes: {
                                 isDuplicated: boolean,
@@ -260,44 +274,6 @@ ${r.hash.length > 60 ? r.hash.replace(/\n/g, '').slice(0, 60) + '...' : r.hash.r
                     client.deleteMessages(message.peerId, [msgSent.id], {})
                 }, 1000 * 60 * 3)
             }
-            if (cmd.startsWith('query')) {
-                const targetMsg = await client.getMessages(
-                    message.peerId,
-                    {
-                        ids: [message.replyTo.replyToMsgId],
-                    })[0];
-
-                if (!targetMsg) {
-                    await client.sendMessage(message.fromId, {
-                        message: '请回复一条消息',
-                        replyTo: message.id
-                    });
-                    return;
-                }
-
-                const res: {
-                    checker: string,
-                    hash: string
-                }[] = []
-                for (const checker in checkers) {
-                    const hash = await checkers[checker].generate({
-                        message: targetMsg,
-                        client,
-                        async getMedia() {
-                            return await client.downloadMedia(targetMsg, {});
-                        }
-                    });
-                    res.push({
-                        checker,
-                        hash
-                    });
-                }
-
-                await client.sendMessage(message.peerId, {
-                    message: `检测结果：\n\n${res.map(r => `**${r.checker}** 特征字符串:\n${r.hash}`).join('\n\n')}`,
-                    replyTo: message.id
-                });
-            }
             return;
         }
 
@@ -368,7 +344,7 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
     // await processMessages(await getMessages(CHANNEL_ID));
 
     (async () => {
-        while (0) {
+        while (1) {
             const lastId = existsSync('lastId.txt') ? parseInt(readFileSync('lastId.txt', 'utf-8')!) : undefined;
             if (lastId && lastId < 30) {
                 console.log("[ LiftUp ] Finished!");

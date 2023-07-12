@@ -6,8 +6,8 @@ export const generate = ({
     getMedia
 }: CheckerGenerateContext) => {
     for (const mediaSlot in message?.media) {
-        if (message.media[mediaSlot].id)
-            return `${mediaSlot}-id-${message.media[mediaSlot].id}`;
+        if (message?.media[mediaSlot].id)
+            return `${mediaSlot}-id-${message?.media[mediaSlot].id}`;
     }
     return undefined;
 }
