@@ -3,6 +3,7 @@ import { CheckerGenerateContext } from './types';
 import { compareTwoStrings } from 'string-similarity';
 import filetype from 'magic-bytes.js'
 import { readFileSync } from 'fs';
+import { MARS_PY_API_BASE } from '../api';
 
 export const generate = async ({
     message,
@@ -12,7 +13,7 @@ export const generate = async ({
     if (message.media?.className !== 'MessageMediaPhoto') return;
     const mediaBuf = (await getMedia()) as unknown as Buffer;
     console.log("[ OCR ] Recognizing..");
-    const apiKeys = readFileSync('./OCR_KEYS', 'utf-8').split('\n').filter(v=>v);
+    const apiKeys = readFileSync('./OCR_KEYS', 'utf-8').split('\n').filter(v => v);
 
     while (1) {
         try {
@@ -30,9 +31,34 @@ export const generate = async ({
 }
 
 export const checkDuplicate = async (s1: string, s2: string) => {
+    if ([s1, s2].some(v => v === 'No Result')) return {
+        isDuplicated: false,
+        confidence: 0
+    }
+
     const d = compareTwoStrings(s1, s2);
+    if (d > 0.65) {
+        const res = await fetch(`${MARS_PY_API_BASE}/text_similarity`, {
+            method: "POST",
+            body: JSON.stringify({
+                "text1": s1,
+                "text2": s2
+            }),
+            headers: {
+                "Content-Type": "application/json"
+            }
+        }).then(r => r.json());
+        if (res.similarity_score > 0.8) {
+            return {
+                isDuplicated: true,
+                confidence: (d - 0.65) / (1 - 0.65),
+                message: `(<b>AI</b> ${Math.round(res.similarity_score * 1000) / 10}%) `
+            }
+        }
+    }
+    
     return {
-        isDuplicated: d > 0.80 && !(s1 === 'No Result') && !(s2 === 'No Result'),
+        isDuplicated: false,
         confidence: (d - 0.8) / 0.2
     }
 }

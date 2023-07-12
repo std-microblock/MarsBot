@@ -4,21 +4,21 @@ from image_similarity import ImageSimilarity
 
 app = Flask(__name__)
 
-# text_similarity = TextSimilarity()
+text_similarity = TextSimilarity()
 image_similarity = ImageSimilarity()
 
-# @app.route('/text_similarity', methods=['POST'])
-# def calculate_text_similarity():
-#     data = request.get_json()
-#     text1 = data['text1']
-#     text2 = data['text2']
+@app.route('/text_similarity', methods=['POST'])
+def calculate_text_similarity():
+    data = request.get_json()
+    text1 = data['text1']
+    text2 = data['text2']
     
-#     similarity_score = text_similarity.calculate_similarity(text1, text2)
+    similarity_score = text_similarity.calculate_similarity(text1, text2)
     
-#     response = {
-#         'similarity_score': similarity_score
-#     }
-#     return jsonify(response)
+    response = {
+        'similarity_score': similarity_score
+    }
+    return jsonify(response)
 
 @app.route('/image_similarity', methods=['POST'])
 def calculate_image_similarity():
