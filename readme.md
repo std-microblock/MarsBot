@@ -6,6 +6,11 @@
 
 ![image](https://github.com/MicroCBer/MarsBot/assets/66859419/dc0e6fbb-7706-4e8b-b90f-0a078501eb26)
 
+#### 视频抽帧 phash
+
+![image](https://github.com/MicroCBer/MarsBot/assets/66859419/b07f1859-81ab-4ff0-8e5f-b577ca4474f8)
+
+
 #### OCR + AI 字符串表意匹配
 
 ![image](https://github.com/MicroCBer/MarsBot/assets/66859419/9424e3c8-c3d2-485b-9811-c9e947503a3c)
