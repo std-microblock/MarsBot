@@ -1,9 +1,12 @@
 import { ocrSpace } from 'ocr-space-api-wrapper';
 import { CheckerGenerateContext } from './types';
 import { compareTwoStrings } from 'string-similarity';
-import filetype from 'magic-bytes.js'
+
 import { readFileSync } from 'fs';
 import { MARS_PY_API_BASE } from '../api';
+import { buf2b64Url } from './utils';
+
+
 
 export const generate = async ({
     message,
@@ -18,7 +21,7 @@ export const generate = async ({
     while (1) {
         try {
             const apikey = apiKeys[Math.floor(Math.random() * apiKeys.length)].trim();
-            const res = await ocrSpace(`data:${filetype(mediaBuf)[0].mime?.replace('jpeg', 'jpg')};base64,${(mediaBuf.toString('base64'))}`,
+            const res = await ocrSpace(buf2b64Url(mediaBuf),
                 { apiKey: apikey, language: 'chs' });
             const ocrResult = res.ParsedResults.length ? res.ParsedResults.map(v => v.ParsedText).join('\n').trim() : 'No Result';
             console.log('[ OCR ] Result:', ocrResult || 'No Result');

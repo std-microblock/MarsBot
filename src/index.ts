@@ -1,20 +1,21 @@
-import { Api, TelegramClient } from "telegram";
+import { Api, TelegramClient, tl } from "telegram";
 import { StringSession } from "telegram/sessions";
 import { NewMessage } from "telegram/events"
 import input from "input";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import Loki from 'lokijs'
-import * as phash from "./duplicateChecker/phash";
-import * as text from "./duplicateChecker/text";
-import * as ocr from "./duplicateChecker/ocr-pear";
-import * as mediaId from "./duplicateChecker/mediaId";
-import * as videoKFPhash from "./duplicateChecker/video-keyframe-phash";
 import BigInteger from "big-integer";
 import { spawn } from "child_process";
 import { readFile, writeFile } from "fs/promises";
 import puppeteer from "puppeteer";
 import bigInt from "big-integer";
 import { getInputChannel, resolveId } from "telegram/Utils";
+
+import * as phash from "./duplicateChecker/phash";
+import * as text from "./duplicateChecker/text";
+import * as ocr from "./duplicateChecker/ocr-pear";
+import * as mediaId from "./duplicateChecker/mediaId";
+import * as deepDanbooru from "./duplicateChecker/deep-danbooru";
 
 const apiId = 24862414;
 const apiHash = "1745670d4621f50d831db069ecc40285";
@@ -33,7 +34,7 @@ const checkers = {
     phash,
     text,
     ocr,
-    videoKFPhash
+    deepDanbooru
 }
 
 const createTGClient: (session?: string) => Promise<TelegramClient> = async (session = "./SESSION") => {
@@ -249,21 +250,46 @@ interface DuplicateResult {
                 const results: any[] = [];
                 for (const checker in checkers) {
                     const collection = getCollection('checkerCollection-' + checker);
-                    const res = collection.find({
-                        'hash': {
-                            $regex: queryText
-                        }
-                    });
-                    results.push(...res.map(v => {
-                        return {
-                            ...v,
-                            checker
-                        }
-                    }));
+
+                    const addResult = (...res) => {
+                        results.push(...res.map(v => {
+                            return {
+                                ...v,
+                                checker
+                            }
+                        }));
+                    }
+                    if (checker === 'deepDanbooru') {
+                        const targetLabels: string[] = queryText.split(',').map(v => v.trim());
+                        // 没有不包含的
+                        addResult(...
+                            collection.where(v => !targetLabels.some(tLabel => !v.hash.some(({ label }) => label === tLabel))));
+
+                    } else {
+                        const res = collection.find({
+                            'hash': {
+                                $regex: queryText
+                            }
+                        });
+                        addResult(...res);
+                    }
                 }
 
-                const msg = `[ 本消息将会在 3 分钟后删除 ]\n找到 ${results.length} 条结果 (Page ${page})\n\n` + results.slice((page - 1) * 10, page * 10).map((r, i) => `${page * 10 - 10 + i + 1}. (${r.checker}) ${r.message ?? ''}${getIdLink(r.id)}:\t
-${r.hash.length > 60 ? r.hash.replace(/\n/g, '').slice(0, 60) + '...' : r.hash.replace(/\n/g, ' ')}`).join('\n\n')
+                const displayHash = (hash) => {
+                    if (typeof hash === "string") return hash.length > 60 ? hash.replace(/\n/g, '').slice(0, 60) + '...' : hash.replace(/\n/g, ' ');
+                    if (hash instanceof Array) return hash.map(v => displayHash(v)).join(',');
+                    if (hash instanceof Object) {
+                        if (hash.label && hash.confidence) {
+                            return `${hash.label}-${(hash.confidence * 100).toFixed(1)}%`;
+                        }
+                    }
+
+                    return `<No Display>`
+                }
+
+                const msg = `[ 本消息将会在 3 分钟后删除 ]\n找到 ${results.length} 条结果 (Page ${page})\n\n` + results.slice((page - 1) * 10, page * 10)
+                    .map((r, i) => `${page * 10 - 10 + i + 1}. (${r.checker}) ${r.message || ''}${getIdLink(r.id)}:\t
+${displayHash(r.hash)}`).join('\n\n')
                 const msgSent = await client.sendMessage(message.peerId, {
                     message: msg,
                     replyTo: message.id,
@@ -298,11 +324,14 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
                     } `;
 
                 console.log(dupMsg)
+
                 await client.sendMessage('1601858692', {
                     message: dupMsg,
                     replyTo: msg,
                     parseMode: 'html',
-                })
+                });
+
+
 
                 await client.sendMessage('xinjingmars', {
                     message: dupMsg,
@@ -344,7 +373,7 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
     // await processMessages(await getMessages(CHANNEL_ID));
 
     (async () => {
-        while (1) {
+        while (0) {
             const lastId = existsSync('lastId.txt') ? parseInt(readFileSync('lastId.txt', 'utf-8')!) : undefined;
             if (lastId && lastId < 30) {
                 console.log("[ LiftUp ] Finished!");

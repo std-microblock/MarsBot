@@ -29,7 +29,6 @@ export const checkDuplicate = async (hash1: string, hash2: string, ctx: CheckerC
                 method: "POST",
                 body
             }).then(r => r.json());
-            console.log(res.similarity_score);
             if (res.similarity_score > 0.8) return {
                 isDuplicated: true,
                 confidence: (16 - d) / 16,

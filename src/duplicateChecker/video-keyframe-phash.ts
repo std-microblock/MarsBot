@@ -42,17 +42,18 @@ export const generate = async ({
 }
 
 export const checkDuplicate = async (hash1: string[], hash2: string[], ctx: CheckerCheckContext) => {
-    if(!hash1 || !hash2 || hash1.length !== hash2.length) return {
+    if (!hash1 || !hash2) return {
         isDuplicated: false,
         confidence: 0
     }
 
     let minDistance = Number.MAX_SAFE_INTEGER, minDistanceProgress = -1;
-    for (const i in hash2) {
+    for (let i = 1; i < 31; i++) {
+        if(!hash1[i] || !hash2[i]) continue;
         const d = dist(hash1[i], hash2[i]);
         if (d < minDistance) {
             minDistance = d;
-            minDistanceProgress = parseInt(i) / hash1.length;
+            minDistanceProgress = i / hash1.length;
         }
     }
 
