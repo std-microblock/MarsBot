@@ -1,7 +1,7 @@
 import { Api, TelegramClient, tl } from "telegram";
 import { StringSession } from "telegram/sessions";
 import { NewMessage } from "telegram/events"
-import input from "input";
+
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import Loki from 'lokijs'
 import BigInteger from "big-integer";
@@ -16,9 +16,7 @@ import * as text from "./duplicateChecker/text";
 import * as ocr from "./duplicateChecker/ocr-pear";
 import * as mediaId from "./duplicateChecker/mediaId";
 import * as deepDanbooru from "./duplicateChecker/deep-danbooru";
-
-const apiId = 24862414;
-const apiHash = "1745670d4621f50d831db069ecc40285";
+import { createTGClient } from "./tg";
 
 const CHANNEL_ID = 'xinjingdaily';
 
@@ -37,25 +35,7 @@ const checkers = {
     deepDanbooru
 }
 
-const createTGClient: (session?: string) => Promise<TelegramClient> = async (session = "./SESSION") => {
-    const stringSession = new StringSession(existsSync(session) ? readFileSync(session, 'utf-8') : '');
 
-    const client = new TelegramClient(stringSession, apiId, apiHash, {
-        connectionRetries: Infinity,
-        autoReconnect: true,
-        retryDelay: 1000
-    });
-
-    await client.start({
-        phoneNumber: async () => await input.text("Please enter your number: "),
-        password: async () => await input.text("Please enter your password: "),
-        phoneCode: async () =>
-            await input.text("Please enter the code you received: "),
-        onError: (err) => console.log(err),
-    });
-
-    return client;
-}
 interface DuplicateResult {
     isDuplicated: boolean,
     confidence: number,
@@ -241,6 +221,19 @@ interface DuplicateResult {
                     replyTo: message.id
                 })
             }
+            if (cmd.toLowerCase().startsWith("checkuser")) {
+                const id = cmd.slice(9).trim();
+                const json = require(__dirname + "/../cleanout/data/1354938560_participants_channel.json")
+                const found = json.participants.find(v => v.userId === id);
+                if (found)
+                    await client.sendMessage(message.peerId, {
+                        message: `在 2023/7/14 的恶俗频道成员备份中找到 ID 为 ${id} 的用户:\n\n${JSON.stringify(found, null, 2)}`,
+                    })
+                else
+                    await client.sendMessage(message.peerId, {
+                        message: `在 2023/7/14 的恶俗频道成员备份中没有找到 ID 为 ${id} 的用户`,
+                    })
+            }
             if (cmd.startsWith('search')) {
                 const query = cmd.slice(7);
                 const pageRegex = /p:(\d+)/;
@@ -362,7 +355,7 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
     }
 
     client.addEventHandler(async ({ message }) => {
-        messageQueue.unshift([message, client]);
+        messageQueue.push([message, client]);
         checkQueue();
     }, new NewMessage({
         // chats: [

@@ -17,7 +17,7 @@ export const generate = async ({
 export const checkDuplicate = async (hash1: string, hash2: string, ctx: CheckerCheckContext) => {
     const d = dist(hash1, hash2);
 
-    if (d < 16) {
+    if (d < 18) {
         const beforeMsg = await ctx.before();
         const mediaBefore = beforeMsg ? await ctx.getMediaCached(beforeMsg) as Buffer : undefined;
         const mediaThis = await ctx.getMediaCached(await ctx.this()) as Buffer;
