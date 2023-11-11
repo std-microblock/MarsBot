@@ -16,9 +16,8 @@ export const createTGClient: (session?: string) => Promise<TelegramClient> = asy
         autoReconnect: true,
         retryDelay: 1000
     });
-
     await client.start({
-        phoneNumber: async () => await input.text("Please enter your number: "),
+        phoneNumber: async () => await input.text(session+"\nPlease enter your number: "),
         password: async () => await input.text("Please enter your password: "),
         phoneCode: async () =>
             await input.text("Please enter the code you received: "),

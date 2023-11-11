@@ -1,6 +1,7 @@
 # MarsBot
 ## Telegram 频道查重 Bot
 
+For [心惊报 Bot](https://github.com/chr233/XinjingdailyBot/)
 
 #### 纯 phash
 

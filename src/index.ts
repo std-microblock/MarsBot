@@ -6,7 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import Loki from 'lokijs'
 import BigInteger from "big-integer";
 import { spawn } from "child_process";
-import { readFile, writeFile } from "fs/promises";
+import { readFile, rename, rm, writeFile } from "fs/promises";
 import puppeteer from "puppeteer";
 import bigInt from "big-integer";
 import { getInputChannel, resolveId } from "telegram/Utils";
@@ -17,8 +17,17 @@ import * as ocr from "./duplicateChecker/ocr-pear";
 import * as mediaId from "./duplicateChecker/mediaId";
 import * as deepDanbooru from "./duplicateChecker/deep-danbooru";
 import { createTGClient } from "./tg";
+import { Profiler, profiler } from "./profiler";
+import { promisePool } from "./promise-pool";
 
 const CHANNEL_ID = 'xinjingdaily';
+const CHANNEL_NUMBER_ID = 1434817225;
+const ADMIN_GROUP_ID = 1601858692;
+const map = {
+    '1434817225': '心惊报',
+    '1601858692': '心惊报审核群',
+};
+
 
 const db = new Loki('marsBot.db');
 
@@ -32,7 +41,7 @@ const checkers = {
     phash,
     text,
     ocr,
-    deepDanbooru
+    // deepDanbooru
 }
 
 
@@ -49,22 +58,184 @@ interface DuplicateResult {
     },
     checker: string
 }
+
+const createTextStore = (name: string, defaultv?: any) => {
+    let content = defaultv;
+    if (existsSync(name))
+        content = JSON.parse(readFileSync(name, 'utf-8'));
+
+    return [
+        content,
+        async () => {
+            await writeFile(name + ".tmp", JSON.stringify(content, null, 4));
+            if (existsSync(name + ".bak")) await rm(name + ".bak");
+            if (existsSync(name)) await rename(name, name + ".bak");
+            await rename(name + ".tmp", name);
+        }
+    ]
+}
+
+let liftUpInfo = {
+    enable: true,
+    lastId: 0,
+    ETA: 0,
+    state: '闲置',
+    total: 0,
+    lastProfile: '暂无'
+};
+
+/**
+ * [
+  {
+    CONSTRUCTOR_ID: 455247544,
+    SUBCLASS_OF_ID: 1570858401,
+    className: 'ReactionEmoji',
+    classType: 'constructor',
+    emoticon: '👍'
+  },
+  {
+    CONSTRUCTOR_ID: 455247544,
+    SUBCLASS_OF_ID: 1570858401,
+    className: 'ReactionEmoji',
+    classType: 'constructor',
+    emoticon: '👎'
+  },
+  {
+    CONSTRUCTOR_ID: 455247544,
+    SUBCLASS_OF_ID: 1570858401,
+    className: 'ReactionEmoji',
+    classType: 'constructor',
+    emoticon: '🤔'
+  },
+  {
+    CONSTRUCTOR_ID: 455247544,
+    SUBCLASS_OF_ID: 1570858401,
+    className: 'ReactionEmoji',
+    classType: 'constructor',
+    emoticon: '🔥'
+  },
+  {
+    CONSTRUCTOR_ID: 455247544,
+    SUBCLASS_OF_ID: 1570858401,
+    className: 'ReactionEmoji',
+    classType: 'constructor',
+    emoticon: '🤮'
+  },
+  {
+    CONSTRUCTOR_ID: 455247544,
+    SUBCLASS_OF_ID: 1570858401,
+    className: 'ReactionEmoji',
+    classType: 'constructor',
+    emoticon: '💩'
+  },
+  {
+    CONSTRUCTOR_ID: 455247544,
+    SUBCLASS_OF_ID: 1570858401,
+    className: 'ReactionEmoji',
+    classType: 'constructor',
+    emoticon: '😁'
+  }
+]
+ */
+
 (async () => {
-    const client = await createTGClient();
+    const client1 = await createTGClient();
     const client2 = await createTGClient("./SESSION2");
     console.log("Client1:");
-    console.log(client.session.save());
+    console.log(client1.session.save());
     console.log("Client2:");
     console.log(client2.session.save());
 
+    // enumerate all groups joined
+    await client1.invoke(new Api.messages.GetDialogs({
+        limit: 100,
+        offsetPeer: new Api.InputPeerEmpty()
+    }));
 
+    await client2.invoke(new Api.messages.GetDialogs({
+        limit: 100,
+        offsetPeer: new Api.InputPeerEmpty()
+    }));
+
+    // list all usable reactions in admin group
+    // const fullChat = await client1.invoke(new Api.channels.GetFullChannel({
+    //     channel: ADMIN_GROUP_ID
+    // }));
+    // console.log(fullChat.fullChat.availableReactions.reactions);
+    // return;
+
+    const [states, saveStates] = createTextStore('states.json', {
+        stateMessage: null
+    });
+    const createStateMessage = async (client = client1) => {
+        if (states.stateMessage)
+            await client.deleteMessages(ADMIN_GROUP_ID, [states.stateMessage], {});
+
+
+        const msg = await client.sendMessage(ADMIN_GROUP_ID, {
+            message: "查重 Bot 正在运行",
+            replyTo: states.stateMessage
+        })
+        // pin the msg
+        // await client.pinMessage(ADMIN_GROUP_ID, msg.id, {})
+        states.stateMessage = msg.id;
+        await saveStates();
+
+        return msg.id;
+    }
+
+    let stateMessage = await createStateMessage(client1);
+
+    let debouncer = 0;
+    const updateStateMessage = async () => {
+        const currentId = debouncer + 1;
+        debouncer = currentId
+        await new Promise(rs => setTimeout(rs, 5000));
+        if (debouncer !== currentId) return;
+
+        const SPLITER = '-------'/*Reaction 示意：
+        🤔 正在处理 👍处理完毕 (空) 处理完毕:没有火星 🔥处理完毕:火星了*/
+        await client1.editMessage(ADMIN_GROUP_ID, {
+            message: stateMessage,
+            text: `火星波特 ⁜ 正在运行
+[上次更新：${new Date().toLocaleString()}]
+
+
+${liftUpInfo.enable ? `${SPLITER}\n向前存储\n当前进度：${liftUpInfo.lastId}\n预计剩余时间：${(liftUpInfo.ETA / 60).toFixed(1)} 小时\n剩余消息：${liftUpInfo.total}\n当前状态：${liftUpInfo.state}\n\n上次 Profile: \n${liftUpInfo.lastProfile}` : ''}
+`
+        })
+    }
+
+    updateStateMessage();
+    const reactionMap = {
+        processing: "🤔",
+        duplicated: "🔥",
+        ok: "😁",
+        processed: "👍",
+        enqueued: "👎"
+    } as const;
+
+    const setMessageReaction = (peer, messageId, reaction: keyof typeof reactionMap | "empty", client = client1) => {
+        return false
+        return client.invoke(new Api.messages.SendReaction({
+            peer,
+            msgId: messageId,
+            reaction: reaction === 'empty' ? undefined : [new Api.ReactionEmoji({ emoticon: reactionMap[reaction] })],
+        }))
+    }
+
+
+
+    setInterval(async () => {
+        stateMessage = await createStateMessage(client1);
+    }, 1000 * 60 * 60 * 2);
 
     const getCollection = (name) => db.getCollection(name) ?? db.addCollection(name, { unique: ['id'] });
 
     const msgCollection = getCollection('messages');
 
-    const getMessageById: ((id: string, tg: TelegramClient) => any) = async (id, tg = client) => {
-        return (await tg.getMessages(new Api.PeerChannel({ channelId: bigInt(id.split("::")[0]) }), { limit: 1, ids: [parseInt(id.split("::")[1])] }))[0];
+    const getMessageById: ((id: string, tg: TelegramClient) => any) = async (id, tg = client1) => {
+        return (await tg.getMessages(id.split("::")[0], { limit: 1, ids: [parseInt(id.split("::")[1])] }))[0];
         const cachedMsg = msgCollection.findOne({ id: { $eq: id } });
         if (cachedMsg) return cachedMsg;
         else {
@@ -77,9 +248,9 @@ interface DuplicateResult {
         }
     }
 
-    const getMediaCachedPath = async (msg: Api.Message, tg: TelegramClient = client) => {
+    const getMediaCachedPath = async (msg: Api.Message, tg: TelegramClient = client1) => {
         const mediaId = checkers.mediaId.generate({
-            message: msg, client,
+            message: msg, client: client1,
             getMedia: async () => undefined,
             getMediaPath: async () => undefined
         });
@@ -94,13 +265,13 @@ interface DuplicateResult {
         return mediaPath;
     }
 
-    const getMediaCached = async (msg: Api.Message, tg: TelegramClient = client) => {
+    const getMediaCached = async (msg: Api.Message, tg: TelegramClient = client1) => {
         const path = await getMediaCachedPath(msg, tg);
         if (!path) return;
         return await readFile(path);
     }
 
-    const checkMessages = async (msgs, client: TelegramClient, returnFalseChecks = false) => {
+    const checkMessages = async (msgs, client: TelegramClient, returnFalseChecks = false, { nocheck = false, profile = profiler('check-message-dedup') } = {}) => {
         const allDuplicated: {
             msgId: string,
             message: any,
@@ -118,63 +289,81 @@ interface DuplicateResult {
             console.log("Current Message ID:", msgId)
 
             const duplicateResults: DuplicateResult[] = [];
+
+            profile.start('parse')
+
             for (const checker in checkers) {
                 const collection = getCollection('checkerCollection-' + checker);
-                if (!collection.findOne({
+
+                if (collection.findOne({
                     'id': {
                         $eq: msgId
                     }
-                })) {
+                }) === null) {
+                    console.log('checkerCollection-' + checker, msgId, collection.findOne({
+                        'id': {
+                            $eq: msgId
+                        }
+                    }))
+
                     console.log(" = Generating: ", checker, msgId)
-                    const res = await checkers[checker].generate({
+                    profile.start('generate-' + checker)
+                    const ctx = {
                         message,
                         client,
-                        getMedia() {
-                            return getMediaCached(message, client);
+                        async getMedia() {
+                            profile.start('get-media');
+                            const res = await getMediaCached(message, client);
+                            profile.start('generate-' + checker);
+                            return res
                         },
-                        getMediaPath() {
-                            return getMediaCachedPath(message, client);
+                        async getMediaPath() {
+                            profile.start('get-media');
+                            const res = await getMediaCachedPath(message, client);
+                            profile.start('generate-' + checker);
+                            return res;
                         }
-                    });
-
-                    console.log(" = Checking: ", checker, msgId)
-
+                    }
+                    const res = await checkers[checker].generate(ctx);
                     if (res) {
                         const thisResult = { id: msgId, hash: res };
                         collection.insertOne(thisResult);
-                        for (const before of collection.find({ id: { $ne: msgId } })) {
-                            // if(msgs.find(m => m.id === before.id)?.groupedId === message.groupedId) continue;
-                            if (!before.id.startsWith("1434817225")) continue;
-                            const ctx = {
-                                before() { return getMessageById(before.id, client) },
-                                this() { return message },
-                                client,
-                                getMediaCached,
-                                getMediaCachedPath
-                            }
-                            const checkRes: {
-                                isDuplicated: boolean,
-                                confidence: number,
-                                message?: string
-                            } = await checkers[checker].checkDuplicate(res, before.hash, ctx);
+                        if (!nocheck) {
+                            console.log(" = Checking: ", checker, msgId)
+                            profile.start('check-' + checker)
 
-                            if (checkRes.isDuplicated || returnFalseChecks) {
-                                duplicateResults.push({
-                                    ...checkRes,
-                                    before,
-                                    this: thisResult,
-                                    checker
-                                });
+                            for (const before of collection.find({ id: { $ne: msgId } })) {
+                                // if(msgs.find(m => m.id === before.id)?.groupedId === message.groupedId) continue;
+                                if (!before.id.startsWith(CHANNEL_NUMBER_ID)) continue;
+                                const ctx = {
+                                    before() { return getMessageById(before.id, client) },
+                                    this() { return message },
+                                    client,
+                                    getMediaCached,
+                                    getMediaCachedPath
+                                }
+                                const checkRes: {
+                                    isDuplicated: boolean,
+                                    confidence: number,
+                                    message?: string
+                                } = await checkers[checker].checkDuplicate(res, before.hash, ctx);
+
+                                if (checkRes.isDuplicated || returnFalseChecks) {
+                                    duplicateResults.push({
+                                        ...checkRes,
+                                        before,
+                                        this: thisResult,
+                                        checker
+                                    });
+                                }
                             }
                         }
+                        console.log(' √ Check complete')
                     }
-                    console.log(' √ Check complete')
                 }
-
-
             }
 
-
+            profile.end()
 
             if (duplicateResults.length > 0)
                 allDuplicated.push({
@@ -187,17 +376,16 @@ interface DuplicateResult {
         return allDuplicated;
     }
 
-    const getMessages = async (id) => ((await client.getMessages(id, { limit: 30, })).sort((a, b) => a.date - b.date));
+    const getMessages = async (id) => ((await client1.getMessages(id, { limit: 30, })).sort((a, b) => a.date - b.date));
 
     // writeFileSync('./1.json', JSON.stringify(await getMessages('xinjingmars'),null,4))
     const messageQueue: [Api.Message, TelegramClient][] = [];
-    let busy = false;
+    const [duplicateResultStore, saveDuplicateResult] = createTextStore('duplicateResult.json', {})
+
+    let busy: Promise<undefined> | undefined = undefined;
 
     const getIdName = (id) => {
-        const map = {
-            '1434817225': '心惊报',
-            '1601858692': '心惊报审核群',
-        };
+
 
         return id.replace(/(^\d{10,})/g, (m) => map[m] ?? m);
     }
@@ -209,8 +397,8 @@ interface DuplicateResult {
 
         console.log(`[MSG ${channelId}]`, message.text)
 
-        if (['1434817225', '1840302036'].includes(channelId)) {
-            await checkMessages([message], client);
+        if ([CHANNEL_NUMBER_ID.toString(), '1840302036'].includes(channelId)) {
+            await checkMessages([message], client, false);
         }
 
         if (message.text.startsWith('!!')) {
@@ -244,19 +432,17 @@ interface DuplicateResult {
                 for (const checker in checkers) {
                     const collection = getCollection('checkerCollection-' + checker);
 
-                    const addResult = (...res) => {
-                        results.push(...res.map(v => {
-                            return {
+                    const addResult = (res) => {
+                        for (const v of res)
+                            results.push({
                                 ...v,
                                 checker
-                            }
-                        }));
+                            });
                     }
                     if (checker === 'deepDanbooru') {
                         const targetLabels: string[] = queryText.split(',').map(v => v.trim());
                         // 没有不包含的
-                        addResult(...
-                            collection.where(v => !targetLabels.some(tLabel => !v.hash.some(({ label }) => label === tLabel))));
+                        addResult(collection.where(v => !targetLabels.some(tLabel => !v.hash.some(({ label }) => label === tLabel))));
 
                     } else {
                         const res = collection.find({
@@ -264,7 +450,7 @@ interface DuplicateResult {
                                 $regex: queryText
                             }
                         });
-                        addResult(...res);
+                        addResult(res);
                     }
                 }
 
@@ -293,16 +479,27 @@ ${displayHash(r.hash)}`).join('\n\n')
                     client.deleteMessages(message.peerId, [msgSent.id], {})
                 }, 1000 * 60 * 3)
             }
+
+            setMessageReaction(message.peerId, message.id, "processed", client);
             return;
         }
 
-
-
-        if (channelId === '1601858692') {
+        if (channelId === ADMIN_GROUP_ID.toString()) {
+            setMessageReaction(message.peerId, message.id, "processing", client);
             if (message.text?.startsWith("#待审核")) return;
 
-            for (const { duplicateResults, message: msg, msgId } of await checkMessages([message], client)) {
-                if (!duplicateResults.some(r => r.before.id.startsWith('1434817225'))) continue;
+            const res = (await checkMessages([message], client))
+            const { duplicateResults, message: msg, msgId } = res[0] ?? {}
+            console.log(duplicateResults, res)
+            if (!duplicateResults) {
+                setMessageReaction(message.peerId, message.id, "empty", client);
+                return;
+            }
+
+
+
+            if (duplicateResults.some(r => r.before.id.startsWith(CHANNEL_NUMBER_ID))) {
+                // skip if no duplicated in channel
 
                 const dupMap = {};
                 for (const res of duplicateResults) {
@@ -314,48 +511,71 @@ ${displayHash(r.hash)}`).join('\n\n')
                         ` + ${getIdLink(msgId)}
 ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ceil(r.confidence * 100)}%</b>`).join('\n')}`)
                     .join('\n')
-                    } `;
+                    } 
+                    
+向该消息回应👍表情以拒稿`;
 
                 console.log(dupMsg)
 
-                await client.sendMessage('1601858692', {
+                const dupTipsMsg = await client.sendMessage(ADMIN_GROUP_ID, {
                     message: dupMsg,
                     replyTo: msg,
                     parseMode: 'html',
                 });
 
-
-
-                await client.sendMessage('xinjingmars', {
-                    message: dupMsg,
-                    parseMode: 'html',
-                })
+                duplicateResultStore[dupTipsMsg.id] = {
+                    dupMap, dupMsg, dupMsgSimple: `重复的稿件：火星报检出 (消息Id) ${Object.keys(dupMap)} 重复`, originMsg: message.id
+                }
+                saveDuplicateResult()
+                setMessageReaction(message.peerId, message.id, "duplicated", client);
             }
+
+            // await client.sendMessage('xinjingmars', {
+            //     message: dupMsg,
+            //     parseMode: 'html',
+            // })
+
         }
     }
 
     const checkQueue = async () => {
-        if (busy) return;
-        busy = true;
-        while (messageQueue.length > 0) {
-            const [message, client] = messageQueue.shift()!;
+        if (!busy)
+            busy = new Promise(async (rs) => {
+                while (messageQueue.length > 0) {
+                    const [message, client] = messageQueue.shift()!;
 
-            // 3 retries
-            for (let i = 0; i < 3; i++) {
-                try {
-                    await processMessage(message, client);
-                    break;
-                } catch (e) {
-                    console.error('Failed to process message: ', e, 'retried for ', i, 'times');
-                    await new Promise(r => setTimeout(r, 1000));
+                    // 3 retries
+                    for (let i = 0; i < 3; i++) {
+                        try {
+                            await processMessage(message, client);
+                            break;
+                        } catch (e) {
+                            console.error('Failed to process message: ', e, 'retried for ', i, 'times');
+                            await new Promise(r => setTimeout(r, 1000));
+                        }
+                    }
                 }
-            }
-        }
-        busy = false;
+                busy = undefined;
+                rs(void 0)
+            });
+        return busy
     }
 
-    client.addEventHandler(async ({ message }) => {
-        messageQueue.push([message, client]);
+    client1.addEventHandler(async ({ message }) => {
+        //@ts-ignore
+        const channelId = (message.peerId.channelId || message.peerId.groupId || message.peerId.userId).toString();
+        console.log("New Message from", channelId)
+        if (!([
+            ADMIN_GROUP_ID.toString(),
+            CHANNEL_NUMBER_ID.toString(),
+        ].includes(channelId))) return;
+
+        console.log("New Message: ", message.message)
+
+        messageQueue.unshift([message, client1]);
+
+        // if (channelId === ADMIN_GROUP_ID.toString())
+        //     await setMessageReaction(message.peerId, message.id, "enqueued", client1);
         checkQueue();
     }, new NewMessage({
         // chats: [
@@ -363,23 +583,88 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
         // ]
     }));
 
+    client1.addEventHandler(event => {
+        if (event.className === 'UpdateMessageReactions') {
+            if (event.reactions.results[0].reaction.emoticon === '👍') {
+                const duplicateInfo = duplicateResultStore[event.msgId]
+                if (duplicateInfo) {
+                    client1.sendMessage(event.peer, {
+                        replyTo: duplicateInfo.originMsg,
+                        message: '/no ' + duplicateInfo.dupMsgSimple
+                    })
+                    delete duplicateResultStore[event.msgId]
+                    saveDuplicateResult()
+                }
+            }
+        }
+    });
     // await processMessages(await getMessages(CHANNEL_ID));
 
     (async () => {
-        while (0) {
+        const targetId = 100
+        const interval = 10
+        let lastUsedTime = 0;
+        while (liftUpInfo.enable) {
+            const profile = profiler('liftup')
             const lastId = existsSync('lastId.txt') ? parseInt(readFileSync('lastId.txt', 'utf-8')!) : undefined;
-            if (lastId && lastId < 30) {
+            liftUpInfo.lastId = lastId!;
+            const ETA = Math.round(((lastId ?? 10000000) - targetId) / 50 * (lastUsedTime / 1000 / 60))
+            liftUpInfo.total = (lastId ?? 10000000) - targetId;
+            liftUpInfo.ETA = ETA;
+            if (lastId && (lastId < 30 || lastId < targetId)) {
+                liftUpInfo.enable = false;
+                updateStateMessage();
                 console.log("[ LiftUp ] Finished!");
                 break
             }
             if (lastId)
-                console.log("[ LiftUp ] Checking to", lastId, 'ETA: ', Math.round(lastId / 50) + 'mins');
-            const messages = ((await client2.getMessages(CHANNEL_ID, { limit: 50, offsetId: lastId })).sort((a, b) => a.date - b.date))
-            messageQueue.push(...messages.map(m => [m, client2] as [Api.Message, TelegramClient]));
-            checkQueue();
+                console.log("[ LiftUp ] Checking to", lastId, 'ETA: ', ETA + 'mins');
 
-            writeFileSync('lastId.txt', messages[0].id.toString());
-            await new Promise(rs => setTimeout(rs, 60 * 1000));
+            liftUpInfo.state = '拉取信息';
+            updateStateMessage();
+            const start = Date.now();
+            profile.start('pull-messages')
+            const messages = ((await client2.getMessages(CHANNEL_ID, { limit: 50, offsetId: lastId })).sort((a, b) => a.date - b.date))
+            const msgs = messages.map(m => [m, client2] as [Api.Message, TelegramClient]).sort((a, b) => b[0].id - a[0].id);
+            liftUpInfo.state = '检查中'
+            updateStateMessage();
+
+            const handle = setInterval(() => {
+                updateStateMessage()
+            }, 20000)
+
+            profile.start('check-message')
+
+            await promisePool(msgs.map((v, i) => {
+                const [message, client] = v
+                console.log("generate: id:", message.id, "index:", i)
+                return async () => {
+                    console.log("before exec: id:", message.id, "index:", i, msgs[i][0].id)
+                    liftUpInfo.state = `检查中 (${i} / ${msgs.length})`
+                    writeFileSync('lastId.txt', message.id.toString());
+
+                    for (let i = 0; i < 3; i++) {
+                        try {
+                            await checkMessages([message], client, false, { nocheck: true, profile });
+                            break;
+                        } catch (e) {
+                            console.error('Failed to process message: ', e, 'retried for ', i, 'times');
+                            await new Promise(r => setTimeout(r, 1000));
+                        }
+                    }
+                }
+            })).promise;
+
+            clearInterval(handle);
+
+            writeFileSync('lastId.txt', (Math.min(...messages.map(v => v.id))).toString());
+            liftUpInfo.state = '等待';
+            updateStateMessage();
+            profile.start('wait')
+            await new Promise(rs => setTimeout(rs, interval * 1000));
+            const end = Date.now();
+            lastUsedTime = end - start;
+            liftUpInfo.lastProfile = profile.endPrint()
         }
     })();
 
@@ -397,7 +682,7 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
                 }
             }
 
-            check(client);
+            check(client1);
             check(client2)
         }, 30 * 1000);
     };

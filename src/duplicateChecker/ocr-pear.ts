@@ -7,63 +7,83 @@ import { readFileSync } from 'fs';
 import puppeteer, { Browser } from 'puppeteer';
 import { RequestInterceptionManager } from 'puppeteer-intercept-and-modify-requests'
 import { MARS_PY_API_BASE } from '../api';
+import { promisePool } from '../promise-pool';
 
 let recognize: (img: string) => Promise<string> = (img) => { throw Error("Not initialized") };
 let browser: Browser | undefined;
-async function initializeOCR() {
+async function initializeOCR(pages = 5) {
     if (browser) browser.close();
     browser = undefined
     browser = await puppeteer.launch({
         headless: false
     });
 
-    const page = await browser.newPage();
-    page.setViewport({
-        width: 1000,
-        height: 800
-    })
+    const newPage = async () => {
+        const page = await browser!.newPage();
+        page.setViewport({
+            width: 1000,
+            height: 800
+        })
 
-    const client = await page.target().createCDPSession()
-    const interceptManager = new RequestInterceptionManager(client as any);
+        const client = await page.target().createCDPSession()
+        const interceptManager = new RequestInterceptionManager(client as any);
 
-    await interceptManager.intercept(
-        {
-            urlPattern: `https://pearocr.com/js/668.*.js`,
-            resourceType: 'Script',
-            modifyResponse({ body }) {
-                setTimeout(() => {
-                    interceptManager.disable()
-                }, 100)
-                return {
-                    body: body?.replace(/\,(\S+)\.addImage\=/, ',window.antOcr=$1,$1.addImage='),
-                }
-            },
-        }
-    )
-
-    await page.goto('https://pearocr.com/#/');
-
-    page.evaluate(`
-        const _refreshItemText = antOcr.refreshItemText
-
-    const recognize = (img)=>{
-        return Promise.race([new Promise((rs)=>{
-            antOcr.deleteAll();
-            antOcr.addImage(img);
-            
-            antOcr.refreshItemText = (e)=>{
-                _refreshItemText(e);
-                rs(antOcr.RecoDataList[0].text);
-                // rs(antOcr.RecoDataList[0].detail.map(v=>v.text).join('\\n'));
+        await interceptManager.intercept(
+            {
+                urlPattern: `https://pearocr.com/js/668.*.js`,
+                resourceType: 'Script',
+                modifyResponse({ body }) {
+                    setTimeout(() => {
+                        interceptManager.disable()
+                    }, 100)
+                    return {
+                        body: body?.replace(/\,(\S+)\.addImage\=/, ',window.antOcr=$1,$1.addImage='),
+                    }
+                },
             }
-        }),new Promise((_,rj)=>setTimeout(rj,20000,'timeout'))])
+        )
+
+        await page.goto('https://pearocr.com/#/');
+
+        page.evaluate(`
+            const _refreshItemText = antOcr.refreshItemText
+    
+        const recognize = (img)=>{
+            return Promise.race([new Promise((rs)=>{
+                antOcr.deleteAll();
+                antOcr.addImage(img);
+                
+                antOcr.refreshItemText = (e)=>{
+                    _refreshItemText(e);
+                    rs(antOcr.RecoDataList[0].text);
+                    // rs(antOcr.RecoDataList[0].detail.map(v=>v.text).join('\\n'));
+                }
+            }),new Promise((_,rj)=>setTimeout(rj,20000,'timeout'))])
+        }
+    
+        window.recognize=recognize;`);
+
+        return (img) => {
+            // @ts-ignore
+            return page.evaluate(async (img) => await window.recognize(img), img) as any
+        }
     }
 
-    window.recognize=recognize;`);
+    const pagesRecognizeFunc = await Promise.all(new Array(pages).fill(0).map(v => newPage()))
 
+    const pending = new Array(pages).fill(null);
+
+    const pool = promisePool([], pages, true);
     recognize = (img) => {
-        // @ts-ignore
-        return page.evaluate(async (img) => await window.recognize(img), img) as any
+        return pool.addTask(async (i) => {
+            const page = pending.findIndex(v => !v);
+            if(page === -1) throw "No page available"
+            console.log("Using page", page)
+            pending[page] = true;
+            const res = await pagesRecognizeFunc[page](img);
+            pending[page] = null;
+            return res;
+        })
     }
 }
 
@@ -79,7 +99,7 @@ export const generate = async ({
     const mediaBuf = (await getMedia()) as unknown as Buffer;
     console.log("[ OCR ] Recognizing..");
 
-    for(let attempt=0;attempt<2;attempt++){
+    for (let attempt = 0; attempt < 2; attempt++) {
         try {
             const res = await recognize(`data:${filetype(mediaBuf)[0].mime?.replace('jpeg', 'jpg')};base64,${(mediaBuf.toString('base64'))}`);
             const ocrResult = res?.trim() || 'No Result';
@@ -123,7 +143,7 @@ export const checkDuplicate = async (s1: string, s2: string) => {
             }
         }
     }
-    
+
     return {
         isDuplicated: false,
         confidence: (d - 0.8) / 0.2

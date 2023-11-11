@@ -29,11 +29,12 @@ export const checkDuplicate = async (hash1: string, hash2: string, ctx: CheckerC
                 method: "POST",
                 body
             }).then(r => r.json());
-            if (res.similarity_score > 0.8) return {
+            if (res.similarity_score > 0.3) return {
                 isDuplicated: true,
                 confidence: (16 - d) / 16,
                 message: `(<b>opencv</b> ${Math.round(res.similarity_score * 1000) / 10}%) `
             }
+            else console.log("OpenCV Check Passed")
         }
     }
 
