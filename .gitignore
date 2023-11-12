@@ -3,6 +3,8 @@ yarn.lock
 node_modules
 SESSION
 SESSION*
+TOKEN
+TOKEN*
 OCR_KEYS
 marsBot.db
 1.json

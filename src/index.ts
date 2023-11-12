@@ -147,6 +147,9 @@ let liftUpInfo = {
     const client2 = await createTGClient("./SESSION2");
     console.log("Client1:");
     console.log(client1.session.save());
+    client1.sendMessage("me",{
+        message: 'test'
+    })
     console.log("Client2:");
     console.log(client2.session.save());
 
@@ -582,7 +585,7 @@ ${displayHash(r.hash)}`).join('\n\n')
 
 
 
-            if (duplicateResults.some(r => r.before.id.startsWith(CHANNEL_NUMBER_ID))) {
+            if (duplicateResults.some(r => r.before.id.startsWith(CHANNEL_NUMBER_ID)) && duplicateResults.length < 10) {
                 // skip if no duplicated in channel
 
                 const dupMap = {};
@@ -668,6 +671,7 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
     }));
 
     client1.addEventHandler(event => {
+        console.log(event.className)
         if (event.className === 'UpdateMessageReactions') {
             if (event.reactions.results[0].reaction.emoticon === '👍') {
                 const duplicateInfo = duplicateResultStore[event.msgId]
