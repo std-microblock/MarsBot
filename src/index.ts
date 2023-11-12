@@ -4,7 +4,7 @@ import { NewMessage } from "telegram/events"
 
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import Loki from 'lokijs'
-import BigInteger from "big-integer";
+import BigInteger, { max } from "big-integer";
 import { spawn } from "child_process";
 import { readFile, rename, rm, writeFile } from "fs/promises";
 import puppeteer from "puppeteer";
@@ -19,10 +19,14 @@ import * as deepDanbooru from "./duplicateChecker/deep-danbooru";
 import { createTGClient } from "./tg";
 import { Profiler, profiler } from "./profiler";
 import { promisePool } from "./promise-pool";
+import { Telegraf } from "telegraf";
+import { SocksProxyAgent } from "socks-proxy-agent";
 
 const CHANNEL_ID = 'xinjingdaily';
 const CHANNEL_NUMBER_ID = 1434817225;
+const CHANNEL_BOT_ID = -1001434817225;
 const ADMIN_GROUP_ID = 1601858692;
+const GROUP_BOT_ID = -1001601858692;
 const map = {
     '1434817225': '心惊报',
     '1601858692': '心惊报审核群',
@@ -76,7 +80,7 @@ const createTextStore = (name: string, defaultv?: any) => {
 }
 
 let liftUpInfo = {
-    enable: true,
+    enable: false,
     lastId: 0,
     ETA: 0,
     state: '闲置',
@@ -146,6 +150,10 @@ let liftUpInfo = {
     console.log("Client2:");
     console.log(client2.session.save());
 
+    const bot = new Telegraf(readFileSync('./TOKEN', 'utf-8'), {
+        telegram: { agent: new SocksProxyAgent('socks://192.168.31.1:7890/') }
+    })
+
     // enumerate all groups joined
     await client1.invoke(new Api.messages.GetDialogs({
         limit: 100,
@@ -167,46 +175,48 @@ let liftUpInfo = {
     const [states, saveStates] = createTextStore('states.json', {
         stateMessage: null
     });
-    const createStateMessage = async (client = client1) => {
-        if (states.stateMessage)
-            await client.deleteMessages(ADMIN_GROUP_ID, [states.stateMessage], {});
 
+    const createStateMessage = async () => {
+        if (states.stateMessage) return states.stateMessage
+        // await bot.telegram.deleteMessage(GROUP_BOT_ID, states.stateMessage);
 
-        const msg = await client.sendMessage(ADMIN_GROUP_ID, {
-            message: "查重 Bot 正在运行",
-            replyTo: states.stateMessage
+        const msg = await bot.telegram.sendMessage(GROUP_BOT_ID, '查重 Bot 正在运行', {
+            disable_notification: true
         })
+
         // pin the msg
-        // await client.pinMessage(ADMIN_GROUP_ID, msg.id, {})
-        states.stateMessage = msg.id;
+        // await bot.telegram.pinChatMessage(GROUP_BOT_ID, msg.message_id, {
+        //     disable_notification: true
+        // })
+        states.stateMessage = msg.message_id;
         await saveStates();
 
-        return msg.id;
+        return msg.message_id;
     }
 
-    let stateMessage = await createStateMessage(client1);
+    let stateMessage = await createStateMessage();
 
     let debouncer = 0;
     const updateStateMessage = async () => {
+
         const currentId = debouncer + 1;
         debouncer = currentId
-        await new Promise(rs => setTimeout(rs, 5000));
+        await new Promise(rs => setTimeout(rs, 3000));
         if (debouncer !== currentId) return;
 
         const SPLITER = '-------'/*Reaction 示意：
         🤔 正在处理 👍处理完毕 (空) 处理完毕:没有火星 🔥处理完毕:火星了*/
-        await client1.editMessage(ADMIN_GROUP_ID, {
-            message: stateMessage,
-            text: `火星波特 ⁜ 正在运行
-[上次更新：${new Date().toLocaleString()}]
-
-
-${liftUpInfo.enable ? `${SPLITER}\n向前存储\n当前进度：${liftUpInfo.lastId}\n预计剩余时间：${(liftUpInfo.ETA / 60).toFixed(1)} 小时\n剩余消息：${liftUpInfo.total}\n当前状态：${liftUpInfo.state}\n\n上次 Profile: \n${liftUpInfo.lastProfile}` : ''}
-`
+        await bot.telegram.editMessageText(GROUP_BOT_ID, stateMessage, undefined, `火星波特 ⁜ 正在运行
+        [上次更新：${new Date().toLocaleString()}]
+        
+        ${liftUpInfo.enable ? `${SPLITER}\n向前存储\n当前进度：${liftUpInfo.lastId}\n预计剩余时间：${(liftUpInfo.ETA / 60).toFixed(1)} 小时\n剩余消息：${liftUpInfo.total}\n当前状态：${liftUpInfo.state}\n\n上次 Profile: \n${liftUpInfo.lastProfile}` : ''}
+        `, {
+            parse_mode: 'HTML'
         })
     }
 
     updateStateMessage();
+    setInterval(updateStateMessage, 5000)
     const reactionMap = {
         processing: "🤔",
         duplicated: "🔥",
@@ -227,7 +237,7 @@ ${liftUpInfo.enable ? `${SPLITER}\n向前存储\n当前进度：${liftUpInfo.las
 
 
     setInterval(async () => {
-        stateMessage = await createStateMessage(client1);
+        stateMessage = await createStateMessage();
     }, 1000 * 60 * 60 * 2);
 
     const getCollection = (name) => db.getCollection(name) ?? db.addCollection(name, { unique: ['id'] });
@@ -392,6 +402,163 @@ ${liftUpInfo.enable ? `${SPLITER}\n向前存储\n当前进度：${liftUpInfo.las
 
     const getIdLink = (id) => `<a href="https://t.me/c/${id.replace('::', '/')}">${getIdName(id)}</a>`;
 
+    bot.command('help', ctx => ctx.reply(`/help - 此页面
+/search [p:页数] <正则> - 搜索
+/ping - pong`))
+
+    const searchData: {
+        [id: string]: {
+            results,
+            removeHandle: NodeJS.Timeout
+        }
+    } = {}
+
+    const generateSearchDocument = (results, searchId, page) => {
+        if (typeof page === 'string') page = parseInt(page)
+        const displayHash = (hash) => {
+            if (typeof hash === "string") return hash.length > 60 ? hash.replace(/\n/g, '').slice(0, 60) + '...' : hash.replace(/\n/g, ' ');
+            if (hash instanceof Array) return hash.map(v => displayHash(v)).join(',');
+            if (hash instanceof Object) {
+                if (hash.label && hash.confidence) {
+                    return `${hash.label}-${(hash.confidence * 100).toFixed(1)}%`;
+                }
+            }
+
+            return `<No Display>`
+        }
+
+        const msg = `找到  (Page ${page})\n\n` + results.slice((page - 1) * 10, page * 10)
+            .map((r, i) => `${page * 10 - 10 + i + 1}. (${r.checker}) ${r.message || ''}${getIdLink(r.id)}:\t
+${displayHash(r.hash)}`).join('\n\n')
+
+        const maxPage = Math.ceil(results.length / 10);
+
+        const btns =
+            [
+                [
+                    { text: `共 ${results.length} 条结果`, callback_data: 'no-react' },
+                    { text: `${page} / ${maxPage}`, callback_data: 'no-react' }
+                ],
+                []
+            ];
+
+        if (page != 1)
+            btns[1].push({ text: "|<", callback_data: `pagination:searchData-${searchId}-1` })
+
+        if (page > 4)
+            btns[1].push({ text: "<<", callback_data: `pagination:searchData-${searchId}-${page - 4}` })
+
+        if (page > 1)
+            btns[1].push({ text: "<", callback_data: `pagination:searchData-${searchId}-${page - 1}` })
+
+        btns[1].push({ text: '×', callback_data: `removeMsg` })
+
+        if (page < maxPage - 1)
+            btns[1].push({ text: ">", callback_data: `pagination:searchData-${searchId}-${page + 1}` })
+
+        if (page < maxPage - 4)
+            btns[1].push({ text: ">>", callback_data: `pagination:searchData-${searchId}-${page + 4}` })
+
+        if (page < maxPage)
+            btns[1].push({ text: ">|", callback_data: `pagination:searchData-${searchId}-${maxPage}` })
+
+        return {
+            msg, btns
+        }
+    }
+
+    bot.command('search', async (ctx) => {
+        const query = ctx.args.join(" ");
+        console.log('search', query)
+        const pageRegex = /p:(\d+)/;
+        const page = pageRegex.test(query) ? parseInt(query.match(pageRegex)![1]) : 1;
+        const queryText = query.replace(pageRegex, '').trim();
+
+        const results: any[] = [];
+        for (const checker in checkers) {
+            const collection = getCollection('checkerCollection-' + checker);
+
+            const addResult = (res) => {
+                for (const v of res)
+                    results.push({
+                        ...v,
+                        checker
+                    });
+            }
+            if (checker === 'deepDanbooru') {
+                const targetLabels: string[] = queryText.split(',').map(v => v.trim());
+                // 没有不包含的
+                addResult(collection.where(v => !targetLabels.some(tLabel => !v.hash.some(({ label }) => label === tLabel))));
+
+            } else {
+                const res = collection.find({
+                    'hash': {
+                        $regex: queryText
+                    }
+                });
+                addResult(res);
+            }
+        }
+
+        const searchId = Math.floor(Math.random() * 1000000)
+
+        const { msg, btns } = generateSearchDocument(results, searchId, page);
+
+        const msgSent = await ctx.reply(msg, {
+            reply_markup: {
+                inline_keyboard: btns
+            },
+            parse_mode: 'HTML'
+        });
+
+        searchData[searchId] = {
+            results, removeHandle: setTimeout(() => {
+                ctx.deleteMessage(msgSent.message_id)
+                delete searchData[searchId]
+            }, 1000 * 60 * 3)
+        }
+    })
+
+    bot.action('removeMsg', ctx => ctx.deleteMessage(ctx.message))
+
+    bot.action(/pagination:searchData-(\S+)-(\S+)/, async ctx => {
+        const [_, searchId, page] = ctx.match;
+        const data = searchData[searchId];
+        clearTimeout(data.removeHandle)
+        data.removeHandle = setTimeout(() => {
+            ctx.deleteMessage()
+            delete searchData[searchId]
+        }, 1000 * 60 * 3)
+        const { msg, btns } = generateSearchDocument(data.results, searchId, page);
+        await ctx.editMessageText(msg, {
+            reply_markup: {
+                inline_keyboard: btns
+            },
+            parse_mode: 'HTML'
+        })
+    })
+
+    bot.command('ping', ctx => ctx.reply('pong!'))
+
+    bot.telegram.setMyCommands([
+        {
+            command: 'ping',
+            description: '检查在线状态'
+        },
+        {
+            command: 'search',
+            description: '搜索投稿记录'
+        },
+        {
+            command: 'help',
+            description: '查看帮助'
+        }
+    ])
+
+    await bot.launch().then(() => console.log("Telegraf Bot launched"))
+    //@ts-ignore
+    bot.pooling.stop = console.log
+
     async function processMessage(message, client: TelegramClient) {
         const channelId = (message.peerId.channelId || message.peerId.groupId || message.peerId.userId).toString();
 
@@ -399,89 +566,6 @@ ${liftUpInfo.enable ? `${SPLITER}\n向前存储\n当前进度：${liftUpInfo.las
 
         if ([CHANNEL_NUMBER_ID.toString(), '1840302036'].includes(channelId)) {
             await checkMessages([message], client, false);
-        }
-
-        if (message.text.startsWith('!!')) {
-            const cmd = message.text.slice(2);
-            if (cmd === 'ping') {
-                await client.sendMessage(message.peerId, {
-                    message: 'pong',
-                    replyTo: message.id
-                })
-            }
-            if (cmd.toLowerCase().startsWith("checkuser")) {
-                const id = cmd.slice(9).trim();
-                const json = require(__dirname + "/../cleanout/data/1354938560_participants_channel.json")
-                const found = json.participants.find(v => v.userId === id);
-                if (found)
-                    await client.sendMessage(message.peerId, {
-                        message: `在 2023/7/14 的恶俗频道成员备份中找到 ID 为 ${id} 的用户:\n\n${JSON.stringify(found, null, 2)}`,
-                    })
-                else
-                    await client.sendMessage(message.peerId, {
-                        message: `在 2023/7/14 的恶俗频道成员备份中没有找到 ID 为 ${id} 的用户`,
-                    })
-            }
-            if (cmd.startsWith('search')) {
-                const query = cmd.slice(7);
-                const pageRegex = /p:(\d+)/;
-                const page = pageRegex.test(query) ? parseInt(query.match(pageRegex)[1]) : 1;
-                const queryText = query.replace(pageRegex, '').trim();
-
-                const results: any[] = [];
-                for (const checker in checkers) {
-                    const collection = getCollection('checkerCollection-' + checker);
-
-                    const addResult = (res) => {
-                        for (const v of res)
-                            results.push({
-                                ...v,
-                                checker
-                            });
-                    }
-                    if (checker === 'deepDanbooru') {
-                        const targetLabels: string[] = queryText.split(',').map(v => v.trim());
-                        // 没有不包含的
-                        addResult(collection.where(v => !targetLabels.some(tLabel => !v.hash.some(({ label }) => label === tLabel))));
-
-                    } else {
-                        const res = collection.find({
-                            'hash': {
-                                $regex: queryText
-                            }
-                        });
-                        addResult(res);
-                    }
-                }
-
-                const displayHash = (hash) => {
-                    if (typeof hash === "string") return hash.length > 60 ? hash.replace(/\n/g, '').slice(0, 60) + '...' : hash.replace(/\n/g, ' ');
-                    if (hash instanceof Array) return hash.map(v => displayHash(v)).join(',');
-                    if (hash instanceof Object) {
-                        if (hash.label && hash.confidence) {
-                            return `${hash.label}-${(hash.confidence * 100).toFixed(1)}%`;
-                        }
-                    }
-
-                    return `<No Display>`
-                }
-
-                const msg = `[ 本消息将会在 3 分钟后删除 ]\n找到 ${results.length} 条结果 (Page ${page})\n\n` + results.slice((page - 1) * 10, page * 10)
-                    .map((r, i) => `${page * 10 - 10 + i + 1}. (${r.checker}) ${r.message || ''}${getIdLink(r.id)}:\t
-${displayHash(r.hash)}`).join('\n\n')
-                const msgSent = await client.sendMessage(message.peerId, {
-                    message: msg,
-                    replyTo: message.id,
-                    parseMode: 'html'
-                });
-
-                setTimeout(() => {
-                    client.deleteMessages(message.peerId, [msgSent.id], {})
-                }, 1000 * 60 * 3)
-            }
-
-            setMessageReaction(message.peerId, message.id, "processed", client);
-            return;
         }
 
         if (channelId === ADMIN_GROUP_ID.toString()) {
@@ -524,7 +608,7 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
                 });
 
                 duplicateResultStore[dupTipsMsg.id] = {
-                    dupMap, dupMsg, dupMsgSimple: `重复的稿件：火星报检出 (消息Id) ${Object.keys(dupMap)} 重复`, originMsg: message.id
+                    dupMap, dupMsg, dupMsgSimple: `重复的稿件 | 火星机器人检出重复 & ${Object.keys(dupMap).map(v => getIdLink(v)).join(' & ')} `, originMsg: message.id
                 }
                 saveDuplicateResult()
                 setMessageReaction(message.peerId, message.id, "duplicated", client);
@@ -572,7 +656,7 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
 
         console.log("New Message: ", message.message)
 
-        messageQueue.unshift([message, client1]);
+        messageQueue.push([message, client1]);
 
         // if (channelId === ADMIN_GROUP_ID.toString())
         //     await setMessageReaction(message.peerId, message.id, "enqueued", client1);
@@ -590,7 +674,8 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
                 if (duplicateInfo) {
                     client1.sendMessage(event.peer, {
                         replyTo: duplicateInfo.originMsg,
-                        message: '/no ' + duplicateInfo.dupMsgSimple
+                        message: '/no ' + duplicateInfo.dupMsgSimple,
+                        parseMode: "html"
                     })
                     delete duplicateResultStore[event.msgId]
                     saveDuplicateResult()
@@ -690,3 +775,7 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
     keepAlive();
 
 })();
+
+process.on('uncaughtException', (e) => {
+    console.error(e)
+})
