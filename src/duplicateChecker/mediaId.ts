@@ -16,6 +16,6 @@ export const checkDuplicate = async (s1: string, s2: string) => {
 
     return {
         isDuplicated: s1 === s2,
-        confidence: 1
+        confidence: s1 === s2 ? 1 : 0
     }
 }

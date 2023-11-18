@@ -1,3 +1,17 @@
+
+{
+    const ts = Error.toString
+    Error.toString = function () {
+        const s = ts.apply(this, []);
+        console.log("AA", s)
+        if (s.includes("Error: Not connected") && s.includes("at ConnectionTCPFull.send ")) {
+            console.log("Patch exiting...")
+            process.exit(-1)
+        }
+        return s
+    }
+}
+
 import { Api, TelegramClient, tl } from "telegram";
 import { StringSession } from "telegram/sessions";
 import { NewMessage } from "telegram/events"
@@ -27,10 +41,17 @@ const CHANNEL_NUMBER_ID = 1434817225;
 const CHANNEL_BOT_ID = -1001434817225;
 const ADMIN_GROUP_ID = 1601858692;
 const GROUP_BOT_ID = -1001601858692;
+const BOT_USER_ID = '1637508162'
+const BOT_NAME = '投稿机器人'
 const map = {
     '1434817225': '心惊报',
     '1601858692': '心惊报审核群',
 };
+
+const getIdLink = (id) => `<a href="https://t.me/c/${id.replace('::', '/')}">${getIdName(id)}</a>`;
+const getIdName = (id) => {
+    return id.replace(/(^\d{10,})/g, (m) => map[m] ?? m);
+}
 
 
 const db = new Loki('marsBot.db');
@@ -67,6 +88,14 @@ const createTextStore = (name: string, defaultv?: any) => {
     let content = defaultv;
     if (existsSync(name))
         content = JSON.parse(readFileSync(name, 'utf-8'));
+
+    if (content instanceof Object) {
+        for (const key in defaultv) {
+            if (!(key in content)) {
+                content[key] = defaultv[key];
+            }
+        }
+    }
 
     return [
         content,
@@ -147,9 +176,6 @@ let liftUpInfo = {
     const client2 = await createTGClient("./SESSION2");
     console.log("Client1:");
     console.log(client1.session.save());
-    client1.sendMessage("me",{
-        message: 'test'
-    })
     console.log("Client2:");
     console.log(client2.session.save());
 
@@ -157,16 +183,47 @@ let liftUpInfo = {
         telegram: { agent: new SocksProxyAgent('socks://192.168.31.1:7890/') }
     })
 
+    const telegramBot: typeof bot.telegram = new Proxy(bot.telegram, {
+        get(target, p, receiver) {
+            // Check if the property is a function
+            if (typeof target[p] === 'function') {
+                // Wrap the function with retry logic
+                return async function (...args) {
+                    const maxRetries = 3; // Maximum number of retries
+                    let retries = 0;
+                    while (retries < maxRetries) {
+                        try {
+                            // Call the original function with the provided arguments
+                            const result = await target[p].apply(target, args);
+                            return result;
+                        } catch (error) {
+                            // Handle the error and retry if necessary
+                            console.error(`Error calling ${p}:`, error);
+                            retries++;
+                        }
+                    }
+                    // Maximum retries reached, handle the failure accordingly
+                    console.error(`Failed to call ${p} after ${maxRetries} retries`);
+                    // You can throw an error here or return a default value/error object
+                    throw new Error(`Failed to call ${p}`);
+                }
+            }
+            // If the property is not a function, simply return it
+            return target[p];
+        },
+    });
+
+
     // enumerate all groups joined
     await client1.invoke(new Api.messages.GetDialogs({
         limit: 100,
         offsetPeer: new Api.InputPeerEmpty()
-    }));
+    }))
 
     await client2.invoke(new Api.messages.GetDialogs({
         limit: 100,
         offsetPeer: new Api.InputPeerEmpty()
-    }));
+    }))
 
     // list all usable reactions in admin group
     // const fullChat = await client1.invoke(new Api.channels.GetFullChannel({
@@ -176,19 +233,39 @@ let liftUpInfo = {
     // return;
 
     const [states, saveStates] = createTextStore('states.json', {
-        stateMessage: null
+        stateMessage: null,
+        discoveredDuplicateToday: 0,
+        discoveredDuplicateTotal: 0,
+        confirmedDuplicateToday: 0,
+        confirmedDuplicateTotal: 0,
     });
+
+    const setIntervalDaily = (callback) => {
+        const now = new Date();
+        const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+        const diff = next.getTime() - now.getTime();
+        setTimeout(() => {
+            callback();
+            setIntervalDaily(callback);
+        }, diff);
+    }
+
+    setIntervalDaily(() => {
+        states.discoveredDuplicateToday = 0;
+        states.confirmedDuplicateToday = 0;
+        saveStates();
+    })
 
     const createStateMessage = async () => {
         if (states.stateMessage) return states.stateMessage
-        // await bot.telegram.deleteMessage(GROUP_BOT_ID, states.stateMessage);
+        // await telegramBot.deleteMessage(GROUP_BOT_ID, states.stateMessage);
 
-        const msg = await bot.telegram.sendMessage(GROUP_BOT_ID, '查重 Bot 正在运行', {
+        const msg = await telegramBot.sendMessage(GROUP_BOT_ID, '查重 Bot 正在运行', {
             disable_notification: true
         })
 
         // pin the msg
-        // await bot.telegram.pinChatMessage(GROUP_BOT_ID, msg.message_id, {
+        // await telegramBot.pinChatMessage(GROUP_BOT_ID, msg.message_id, {
         //     disable_notification: true
         // })
         states.stateMessage = msg.message_id;
@@ -209,17 +286,22 @@ let liftUpInfo = {
 
         const SPLITER = '-------'/*Reaction 示意：
         🤔 正在处理 👍处理完毕 (空) 处理完毕:没有火星 🔥处理完毕:火星了*/
-        await bot.telegram.editMessageText(GROUP_BOT_ID, stateMessage, undefined, `火星波特 ⁜ 正在运行
+        await telegramBot.editMessageText(GROUP_BOT_ID, stateMessage, undefined, `火星波特 ⁜ 正在运行
         [上次更新：${new Date().toLocaleString()}]
         
         ${liftUpInfo.enable ? `${SPLITER}\n向前存储\n当前进度：${liftUpInfo.lastId}\n预计剩余时间：${(liftUpInfo.ETA / 60).toFixed(1)} 小时\n剩余消息：${liftUpInfo.total}\n当前状态：${liftUpInfo.state}\n\n上次 Profile: \n${liftUpInfo.lastProfile}` : ''}
+
+        已检出：<b>${states.discoveredDuplicateTotal}</b> 条
+        已确认：<b>${states.confirmedDuplicateTotal}</b> 条
+        今日检出：<b>${states.discoveredDuplicateToday}</b> 条
+        今日确认：<b>${states.confirmedDuplicateToday}</b> 条
         `, {
             parse_mode: 'HTML'
         })
     }
 
     updateStateMessage();
-    setInterval(updateStateMessage, 5000)
+    setInterval(updateStateMessage, 30 * 1000)
     const reactionMap = {
         processing: "🤔",
         duplicated: "🔥",
@@ -284,109 +366,102 @@ let liftUpInfo = {
         return await readFile(path);
     }
 
-    const checkMessages = async (msgs, client: TelegramClient, returnFalseChecks = false, { nocheck = false, profile = profiler('check-message-dedup') } = {}) => {
-        const allDuplicated: {
-            msgId: string,
-            message: any,
-            duplicateResults: DuplicateResult[]
-        }[] = [];
-        for (const messageIndex in msgs) {
-            const message = msgs[messageIndex];
-            if (!msgCollection.findOne({ id: { $eq: message.id } }))
-                msgCollection.insert(message);
+    const checkMessage = async (message: Api.Message, client: TelegramClient, returnFalseChecks = false, { nocheck = false, profile = profiler('check-message-dedup'), channelOnly = true } = {}) => {
+        if (!msgCollection.findOne({ id: { $eq: message.id } }))
+            msgCollection.insert(message);
 
-            if (!message.peerId) continue;
-            const msgId = `${message.peerId.channelId ?? message.peerId.groupId}::${message.id}`;
-            if (!message.id) continue;
+        if (!message.peerId) throw new Error("No PeerId in message");
+        // @ts-ignore
+        const msgId = `${message.peerId.channelId ?? message.peerId.groupId}::${message.id}`;
+        if (!message.id) throw new Error("No id in message");
 
-            console.log("Current Message ID:", msgId)
+        console.log("Current Message ID:", msgId)
 
-            const duplicateResults: DuplicateResult[] = [];
+        const duplicateResults: DuplicateResult[] = [];
 
-            profile.start('parse')
+        profile.start('parse')
 
-            for (const checker in checkers) {
-                const collection = getCollection('checkerCollection-' + checker);
+        for (const checker in checkers) {
+            const collection = getCollection('checkerCollection-' + checker);
 
-                if (collection.findOne({
+            let result = collection.findOne({
+                'id': {
+                    $eq: msgId
+                }
+            })
+
+            if (result === null) {
+                console.log('checkerCollection-' + checker, msgId, collection.findOne({
                     'id': {
                         $eq: msgId
                     }
-                }) === null) {
-                    console.log('checkerCollection-' + checker, msgId, collection.findOne({
-                        'id': {
-                            $eq: msgId
-                        }
-                    }))
+                }))
 
-                    console.log(" = Generating: ", checker, msgId)
-                    profile.start('generate-' + checker)
-                    const ctx = {
-                        message,
-                        client,
-                        async getMedia() {
-                            profile.start('get-media');
-                            const res = await getMediaCached(message, client);
-                            profile.start('generate-' + checker);
-                            return res
-                        },
-                        async getMediaPath() {
-                            profile.start('get-media');
-                            const res = await getMediaCachedPath(message, client);
-                            profile.start('generate-' + checker);
-                            return res;
-                        }
-                    }
-                    const res = await checkers[checker].generate(ctx);
-                    if (res) {
-                        const thisResult = { id: msgId, hash: res };
-                        collection.insertOne(thisResult);
-                        if (!nocheck) {
-                            console.log(" = Checking: ", checker, msgId)
-                            profile.start('check-' + checker)
-
-                            for (const before of collection.find({ id: { $ne: msgId } })) {
-                                // if(msgs.find(m => m.id === before.id)?.groupedId === message.groupedId) continue;
-                                if (!before.id.startsWith(CHANNEL_NUMBER_ID)) continue;
-                                const ctx = {
-                                    before() { return getMessageById(before.id, client) },
-                                    this() { return message },
-                                    client,
-                                    getMediaCached,
-                                    getMediaCachedPath
-                                }
-                                const checkRes: {
-                                    isDuplicated: boolean,
-                                    confidence: number,
-                                    message?: string
-                                } = await checkers[checker].checkDuplicate(res, before.hash, ctx);
-
-                                if (checkRes.isDuplicated || returnFalseChecks) {
-                                    duplicateResults.push({
-                                        ...checkRes,
-                                        before,
-                                        this: thisResult,
-                                        checker
-                                    });
-                                }
-                            }
-                        }
-                        console.log(' √ Check complete')
+                console.log(" = Generating: ", checker, msgId)
+                profile.start('generate-' + checker)
+                const ctx = {
+                    message,
+                    client,
+                    async getMedia() {
+                        profile.start('get-media');
+                        const res = await getMediaCached(message, client);
+                        profile.start('generate-' + checker);
+                        return res
+                    },
+                    async getMediaPath() {
+                        profile.start('get-media');
+                        const res = await getMediaCachedPath(message, client);
+                        profile.start('generate-' + checker);
+                        return res;
                     }
                 }
+                const res = await checkers[checker].generate(ctx);
+
+                result = { id: msgId, hash: res ?? null };
+                collection.insertOne(result);
             }
 
-            profile.end()
+            if (!nocheck) {
+                console.log(" = Checking: ", checker, msgId)
+                profile.start('check-' + checker)
 
-            if (duplicateResults.length > 0)
-                allDuplicated.push({
-                    duplicateResults,
-                    message,
-                    msgId
-                });
+                if (result.hash)
+                    for (const before of collection.find({ id: { $ne: msgId }, hash: { $ne: null } })) {
+                        // if(msgs.find(m => m.id === before.id)?.groupedId === message.groupedId) continue;
+                        if (!before.id.startsWith(CHANNEL_NUMBER_ID) && channelOnly) continue;
+                        const ctx = {
+                            before() { return getMessageById(before.id, client) },
+                            this() { return message },
+                            client,
+                            getMediaCached,
+                            getMediaCachedPath
+                        }
+                        const checkRes: {
+                            isDuplicated: boolean,
+                            confidence: number,
+                            message?: string
+                        } = await checkers[checker].checkDuplicate(result.hash, before.hash, ctx);
+
+                        if (checkRes.isDuplicated || returnFalseChecks) {
+                            duplicateResults.push({
+                                ...checkRes,
+                                before,
+                                this: result,
+                                checker
+                            });
+                        }
+                    }
+
+            }
         }
 
-        return allDuplicated;
+        profile.end()
+
+        return {
+            duplicateResults,
+            message,
+            msgId
+        }
     }
 
     const getMessages = async (id) => ((await client1.getMessages(id, { limit: 30, })).sort((a, b) => a.date - b.date));
@@ -397,26 +472,31 @@ let liftUpInfo = {
 
     let busy: Promise<undefined> | undefined = undefined;
 
-    const getIdName = (id) => {
 
-
-        return id.replace(/(^\d{10,})/g, (m) => map[m] ?? m);
-    }
-
-    const getIdLink = (id) => `<a href="https://t.me/c/${id.replace('::', '/')}">${getIdName(id)}</a>`;
 
     bot.command('help', ctx => ctx.reply(`/help - 此页面
 /search [p:页数] <正则> - 搜索
-/ping - pong`))
+/ping - pong
+/restart - 重启 Bot
+/liftup [id:开始id] - 切换向上爬取`))
 
-    const searchData: {
+    interface BotReplyDocument {
+        msg: string,
+        btns?: {
+            text: string,
+            callback: () => {}
+        }[][],
+        total?: number
+    }
+    const callbackIdMap = {};
+    const pagenationData: {
         [id: string]: {
-            results,
+            generateResult: ((page: number) => BotReplyDocument),
             removeHandle: NodeJS.Timeout
         }
     } = {}
 
-    const generateSearchDocument = (results, searchId, page) => {
+    const generatePageDocument = (results, searchId, page) => {
         if (typeof page === 'string') page = parseInt(page)
         const displayHash = (hash) => {
             if (typeof hash === "string") return hash.length > 60 ? hash.replace(/\n/g, '').slice(0, 60) + '...' : hash.replace(/\n/g, ' ');
@@ -505,7 +585,7 @@ ${displayHash(r.hash)}`).join('\n\n')
 
         const searchId = Math.floor(Math.random() * 1000000)
 
-        const { msg, btns } = generateSearchDocument(results, searchId, page);
+        const { msg, btns } = generatePageDocument(results, searchId, page);
 
         const msgSent = await ctx.reply(msg, {
             reply_markup: {
@@ -514,25 +594,25 @@ ${displayHash(r.hash)}`).join('\n\n')
             parse_mode: 'HTML'
         });
 
-        searchData[searchId] = {
+        pagenationData[searchId] = {
             results, removeHandle: setTimeout(() => {
-                ctx.deleteMessage(msgSent.message_id)
-                delete searchData[searchId]
+                ctx.deleteMessage(msgSent.message_id).catch(() => { })
+                delete pagenationData[searchId]
             }, 1000 * 60 * 3)
         }
     })
 
-    bot.action('removeMsg', ctx => ctx.deleteMessage(ctx.message))
+    bot.action('removeMsg', ctx => ctx.deleteMessage(ctx.message).catch(() => { }))
 
     bot.action(/pagination:searchData-(\S+)-(\S+)/, async ctx => {
         const [_, searchId, page] = ctx.match;
-        const data = searchData[searchId];
+        const data = pagenationData[searchId];
         clearTimeout(data.removeHandle)
         data.removeHandle = setTimeout(() => {
-            ctx.deleteMessage()
-            delete searchData[searchId]
+            ctx.deleteMessage().catch(() => { })
+            delete pagenationData[searchId]
         }, 1000 * 60 * 3)
-        const { msg, btns } = generateSearchDocument(data.results, searchId, page);
+        const { msg, btns } = generatePageDocument(data.results, searchId, page);
         await ctx.editMessageText(msg, {
             reply_markup: {
                 inline_keyboard: btns
@@ -543,153 +623,7 @@ ${displayHash(r.hash)}`).join('\n\n')
 
     bot.command('ping', ctx => ctx.reply('pong!'))
 
-    bot.telegram.setMyCommands([
-        {
-            command: 'ping',
-            description: '检查在线状态'
-        },
-        {
-            command: 'search',
-            description: '搜索投稿记录'
-        },
-        {
-            command: 'help',
-            description: '查看帮助'
-        }
-    ])
-
-    await bot.launch().then(() => console.log("Telegraf Bot launched"))
-    //@ts-ignore
-    bot.pooling.stop = console.log
-
-    async function processMessage(message, client: TelegramClient) {
-        const channelId = (message.peerId.channelId || message.peerId.groupId || message.peerId.userId).toString();
-
-        console.log(`[MSG ${channelId}]`, message.text)
-
-        if ([CHANNEL_NUMBER_ID.toString(), '1840302036'].includes(channelId)) {
-            await checkMessages([message], client, false);
-        }
-
-        if (channelId === ADMIN_GROUP_ID.toString()) {
-            setMessageReaction(message.peerId, message.id, "processing", client);
-            if (message.text?.startsWith("#待审核")) return;
-
-            const res = (await checkMessages([message], client))
-            const { duplicateResults, message: msg, msgId } = res[0] ?? {}
-            console.log(duplicateResults, res)
-            if (!duplicateResults) {
-                setMessageReaction(message.peerId, message.id, "empty", client);
-                return;
-            }
-
-
-
-            if (duplicateResults.some(r => r.before.id.startsWith(CHANNEL_NUMBER_ID)) && duplicateResults.length < 10) {
-                // skip if no duplicated in channel
-
-                const dupMap = {};
-                for (const res of duplicateResults) {
-                    dupMap[res.before.id] ??= [];
-                    dupMap[res.before.id].push(res);
-                }
-                const dupMsg = `<u> <b>火星报速讯！</b></u>\n <a href="https://t.me/c/${msgId.replace("::", "/")}">原消息</a>\n\n${Object.entries(dupMap)
-                    .map(([msgId, dups]: any) =>
-                        ` + ${getIdLink(msgId)}
-${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ceil(r.confidence * 100)}%</b>`).join('\n')}`)
-                    .join('\n')
-                    } 
-                    
-向该消息回应👍表情以拒稿`;
-
-                console.log(dupMsg)
-
-                const dupTipsMsg = await client.sendMessage(ADMIN_GROUP_ID, {
-                    message: dupMsg,
-                    replyTo: msg,
-                    parseMode: 'html',
-                });
-
-                duplicateResultStore[dupTipsMsg.id] = {
-                    dupMap, dupMsg, dupMsgSimple: `重复的稿件 | 火星机器人检出重复 & ${Object.keys(dupMap).map(v => getIdLink(v)).join(' & ')} `, originMsg: message.id
-                }
-                saveDuplicateResult()
-                setMessageReaction(message.peerId, message.id, "duplicated", client);
-            }
-
-            // await client.sendMessage('xinjingmars', {
-            //     message: dupMsg,
-            //     parseMode: 'html',
-            // })
-
-        }
-    }
-
-    const checkQueue = async () => {
-        if (!busy)
-            busy = new Promise(async (rs) => {
-                while (messageQueue.length > 0) {
-                    const [message, client] = messageQueue.shift()!;
-
-                    // 3 retries
-                    for (let i = 0; i < 3; i++) {
-                        try {
-                            await processMessage(message, client);
-                            break;
-                        } catch (e) {
-                            console.error('Failed to process message: ', e, 'retried for ', i, 'times');
-                            await new Promise(r => setTimeout(r, 1000));
-                        }
-                    }
-                }
-                busy = undefined;
-                rs(void 0)
-            });
-        return busy
-    }
-
-    client1.addEventHandler(async ({ message }) => {
-        //@ts-ignore
-        const channelId = (message.peerId.channelId || message.peerId.groupId || message.peerId.userId).toString();
-        console.log("New Message from", channelId)
-        if (!([
-            ADMIN_GROUP_ID.toString(),
-            CHANNEL_NUMBER_ID.toString(),
-        ].includes(channelId))) return;
-
-        console.log("New Message: ", message.message)
-
-        messageQueue.push([message, client1]);
-
-        // if (channelId === ADMIN_GROUP_ID.toString())
-        //     await setMessageReaction(message.peerId, message.id, "enqueued", client1);
-        checkQueue();
-    }, new NewMessage({
-        // chats: [
-        //     CHANNEL_ID, "xinjingmars", "1601858692"
-        // ]
-    }));
-
-    client1.addEventHandler(event => {
-        console.log(event.className)
-        if (event.className === 'UpdateMessageReactions') {
-            if (event.reactions.results[0].reaction.emoticon === '👍') {
-                const duplicateInfo = duplicateResultStore[event.msgId]
-                if (duplicateInfo) {
-                    client1.sendMessage(event.peer, {
-                        replyTo: duplicateInfo.originMsg,
-                        message: '/no ' + duplicateInfo.dupMsgSimple,
-                        parseMode: "html"
-                    })
-                    delete duplicateResultStore[event.msgId]
-                    saveDuplicateResult()
-                }
-            }
-        }
-    });
-    // await processMessages(await getMessages(CHANNEL_ID));
-
-    (async () => {
+    const checkLiftUp = async () => {
         const targetId = 100
         const interval = 10
         let lastUsedTime = 0;
@@ -717,11 +651,6 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
             const msgs = messages.map(m => [m, client2] as [Api.Message, TelegramClient]).sort((a, b) => b[0].id - a[0].id);
             liftUpInfo.state = '检查中'
             updateStateMessage();
-
-            const handle = setInterval(() => {
-                updateStateMessage()
-            }, 20000)
-
             profile.start('check-message')
 
             await promisePool(msgs.map((v, i) => {
@@ -734,7 +663,7 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
 
                     for (let i = 0; i < 3; i++) {
                         try {
-                            await checkMessages([message], client, false, { nocheck: true, profile });
+                            await checkMessage(message, client, false, { nocheck: true, profile });
                             break;
                         } catch (e) {
                             console.error('Failed to process message: ', e, 'retried for ', i, 'times');
@@ -743,8 +672,6 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
                     }
                 }
             })).promise;
-
-            clearInterval(handle);
 
             writeFileSync('lastId.txt', (Math.min(...messages.map(v => v.id))).toString());
             liftUpInfo.state = '等待';
@@ -755,31 +682,322 @@ ${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ce
             lastUsedTime = end - start;
             liftUpInfo.lastProfile = profile.endPrint()
         }
+    }
+
+    checkLiftUp()
+
+    bot.command('liftup', ctx => {
+        const startFrom = parseInt(ctx.args[0] || '-1')
+        if (liftUpInfo.enable) {
+            liftUpInfo.enable = false;
+            ctx.reply("已关闭向上爬取")
+        } else if (startFrom > 0 && !Number.isNaN(startFrom)) {
+            writeFileSync('./lastId,txt', startFrom.toString())
+            liftUpInfo.enable = true;
+            checkLiftUp()
+            ctx.reply(`已开启向上爬取，将从 t.me/${CHANNEL_ID}/${startFrom} 开始继续爬取`);
+        } else {
+            liftUpInfo.enable = true;
+            checkLiftUp()
+            ctx.reply(`已开启向上爬取，将按上次进度继续爬取`);
+        }
+    })
+
+    telegramBot.setMyCommands([
+        {
+            command: 'ping',
+            description: '检查在线状态'
+        },
+        {
+            command: 'search',
+            description: '搜索投稿记录'
+        },
+        {
+            command: 'help',
+            description: '查看帮助'
+        },
+        {
+            command: 'restart',
+            description: '重启 Bot'
+        },
+        {
+            command: 'liftup',
+            description: '开启/关闭向上爬取'
+        },
+        {
+            command: 'check',
+            description: '手动检查回复的消息'
+        },
+        {
+            command: 'relaunch',
+            description: '重启 API Bot'
+        }
+    ])
+
+    !(async () => {
+        while (1)
+            await bot.launch().then(() => console.log("Telegraf Bot launched"))
     })();
 
+    async function processMessage(message, client: TelegramClient) {
+        const channelId: string = (message.peerId.channelId || message.peerId.groupId || message.peerId.userId).toString();
 
+        console.log(`[MSG ${channelId}]`, message.text)
 
-    const keepAlive = async () => {
-        setInterval(async () => {
-            const check = async (client) => {
-                if (!client.connected) {
-                    await client.connect()
+        if ([CHANNEL_NUMBER_ID.toString(), '1840302036'].includes(channelId)) {
+            await checkMessage(message, client, false);
+        }
+
+        setMessageReaction(message.peerId, message.id, "processing", client);
+
+        const res = (await checkMessage(message, client))
+        const { duplicateResults, message: msg, msgId } = res
+        if (!duplicateResults) {
+            setMessageReaction(message.peerId, message.id, "empty", client);
+            return;
+        }
+
+        const autoReject = channelId === ADMIN_GROUP_ID.toString()
+
+        if (duplicateResults.some(r => r.before.id.startsWith(CHANNEL_NUMBER_ID.toString())) && duplicateResults.length < 10) {
+            // skip if no duplicated in channel
+
+            const dupMap = {};
+            for (const res of duplicateResults) {
+                dupMap[res.before.id] ??= [];
+                dupMap[res.before.id].push(res);
+            }
+            const dupMsg = `<u> <b>火星报速讯！</b></u>\n <a href="https://t.me/c/${msgId.replace("::", "/")}">原消息</a>\n\n${Object.entries(dupMap)
+                .map(([msgId, dups]: any) =>
+                    ` + ${getIdLink(msgId)}
+${dups.map(r => `    - <b>${r.checker}</b> ${r.message ?? ''}检出 <b>${Math.ceil(r.confidence * 100)}%</b>`).join('\n')}`)
+                .join('\n')
+                } 
+                    
+${autoReject ? '向该消息回应👍表情以拒稿' : '请手动撤稿/拒稿'}`;
+
+            console.log(dupMsg)
+            states.discoveredDuplicateToday++;
+            states.discoveredDuplicateTotal++;
+            saveStates();
+
+            const dupTipsMsg = await client.sendMessage(ADMIN_GROUP_ID, {
+                message: dupMsg,
+                replyTo: channelId === ADMIN_GROUP_ID ? msg : undefined,
+                parseMode: 'html',
+            });
+
+            if (autoReject) {
+                duplicateResultStore[dupTipsMsg.id] = {
+                    dupMap, dupMsg, dupMsgSimple: `重复的稿件 | 火星机器人检出重复 & ${Object.keys(dupMap).map(v => getIdLink(v)).join(' & ')} `, originMsg: message.id
                 }
-
-                if (await client.checkAuthorization()) {
-                    await client.getMe()
-                }
+                saveDuplicateResult()
             }
 
-            check(client1);
-            check(client2)
-        }, 30 * 1000);
+            setMessageReaction(message.peerId, message.id, "duplicated", client);
+        }
+
+        // await client.sendMessage('xinjingmars', {
+        //     message: dupMsg,
+        //     parseMode: 'html',
+        // })
+
+    }
+
+    const checkQueue = async () => {
+        if (!busy)
+            busy = new Promise(async (rs) => {
+                while (messageQueue.length > 0) {
+                    const [message, client] = messageQueue.shift()!;
+
+                    // 3 retries
+                    for (let i = 0; i < 3; i++) {
+                        try {
+                            await processMessage(message, client);
+                            break;
+                        } catch (e) {
+                            console.error('Failed to process message: ', e, 'retried for ', i, 'times');
+                            await new Promise(r => setTimeout(r, 1000));
+                        }
+                    }
+                }
+                busy = undefined;
+                rs(void 0)
+            });
+        return busy
+    }
+
+    client1.addEventHandler(async ({ message }) => {
+        //@ts-ignore
+        const channelId: string = (message.peerId.channelId || message.peerId.groupId || message.peerId.userId).toString();
+        console.log("New Message from", channelId)
+        if (!([
+            ADMIN_GROUP_ID.toString(),
+            CHANNEL_NUMBER_ID.toString(),
+        ].includes(channelId))) return;
+
+        const textMessage = message.message;
+        const reply = (msg) => client1.sendMessage(message.peerId, {
+            message: msg,
+            replyTo: message.id
+        }).catch(console.error)
+        if (textMessage?.startsWith('/restart')) {
+            await client1.sendMessage(message.peerId, {
+                message: '正在重启……',
+                replyTo: message.id
+            }).catch(console.error)
+            process.exit(0)
+        }
+        if (textMessage?.startsWith('/check')) {
+            const messageId = textMessage.split(' ')[1] || (message.replyTo && ((message.chat?.id ?? message.fromId) + "::" + message.replyTo?.replyToMsgId)) || '';
+            if (!messageId.includes('::')) reply('请回复消息或提供消息 ID (格式：peerId::msgId)')
+            let msg
+            try {
+                msg = await getMessageById(messageId, client1)
+            } catch (e) {
+                reply('获取原消息失败')
+                return;
+            }
+            if (!msg) {
+                reply('获取原消息失败')
+                return;
+            }
+            const checkingTips = await telegramBot.sendMessage(GROUP_BOT_ID, '正在检查……')
+            try {
+                console.log(msg)
+                const res = (await checkMessage(msg, client1, true, {
+                    nocheck: false,
+                    channelOnly: false
+                }))
+                const { duplicateResults, message: msg2, msgId } = res
+                duplicateResults.sort((a, b) => b.confidence - a.confidence)
+                console.log("Total:", duplicateResults.length)
+                telegramBot.editMessageText(GROUP_BOT_ID, checkingTips.message_id, undefined, `检查结果：\n\n${duplicateResults.filter(v => v.confidence > 0).slice(0, 30).map(r => `${getIdLink(r.this.id)} <b>${r.checker}</b> 检出 ${Math.ceil(r.confidence * 100)}%`).join('\n')}`, {
+                    parse_mode: "HTML"
+                })
+            } catch (e) {
+                try {
+                    telegramBot.editMessageText(GROUP_BOT_ID, checkingTips.message_id, undefined, `检查失败：${e.toString()}`)
+                } catch (e2) {
+                    client1.sendMessage(ADMIN_GROUP_ID, {
+                        message: `检查失败：${e.toString()}\n\n${e2.toString()}`
+                    })
+                }
+            }
+        }
+        if (textMessage?.startsWith('/relaunch')) {
+            bot.launch();
+            client1.sendMessage(message.peerId, {
+                message: '已重新初始化 API Bot',
+                replyTo: message.id
+            });
+        }
+        if (textMessage?.startsWith('/dumpmsg')) {
+            const [_, channelId, msgId] = textMessage.split(' ');
+            const msg = await getMessageById(`${channelId}::${msgId}`, client1);
+            if (!msg) return reply('获取消息失败')
+            console.log(JSON.stringify(msg, null, 4))
+            return reply('已在控制台输出')
+        }
+
+        console.log("New Message: ", message.text, 'sender', message.sender?.id.toString())
+
+        // 对于审核群：1. 首先处理别人投稿的消息，直接入队列  2. 对于 发布人: efsg (https://t.me/iamefsg) 这种消息，获取消息直链，再入队列
+        if (message.sender?.id.toString() === BOT_USER_ID && channelId === ADMIN_GROUP_ID.toString()) {
+            if (message.text?.startsWith("发布人")) {
+                const msgId = (message.entities?.find(v => ((v as unknown as Api.TextUrl)?.url.toString().includes("t.me/xinjingdaily/"))) as unknown as Api.TextUrl)?.url?.split("/").pop();
+                if (!msgId) {
+                    console.log("从审核群获取消息直链失败")
+                    return
+                }
+
+                const msg = await getMessageById(CHANNEL_NUMBER_ID + "::" + msgId!, client1);
+                if (!msg) return console.log("从审核群获取消息失败")
+
+                messageQueue.push([msg, client1]);
+            } else {
+                if (message.text?.startsWith("#待审核") || (message.text?.includes("状态:") && message.text?.includes("模式:"))) return;
+                messageQueue.push([message, client1]);
+            }
+
+            checkQueue();
+        }
+
+        // 对于频道：如果不是频道机器人发的，直接入队列
+        if (channelId === CHANNEL_NUMBER_ID.toString() && message.postAuthor !== BOT_NAME) {
+            messageQueue.push([message, client1]);
+            checkQueue();
+        }
+
+        // if (channelId === ADMIN_GROUP_ID.toString())
+        //     await setMessageReaction(message.peerId, message.id, "enqueued", client1);
+
+    }, new NewMessage({
+        // chats: [
+        //     CHANNEL_ID, "xinjingmars", "1601858692"
+        // ]
+    }));
+
+    client1.addEventHandler(event => {
+        if (event.className === 'UpdateMessageReactions') {
+            if (event.reactions.results[0].reaction.emoticon === '👍') {
+                const duplicateInfo = duplicateResultStore[event.msgId]
+                if (duplicateInfo) {
+                    client1.sendMessage(event.peer, {
+                        replyTo: duplicateInfo.originMsg,
+                        message: '/no ' + duplicateInfo.dupMsgSimple,
+                        parseMode: "html"
+                    })
+                    delete duplicateResultStore[event.msgId]
+                    states.confirmedDuplicateToday++;
+                    states.confirmedDuplicateTotal++;
+                    saveStates();
+                    saveDuplicateResult()
+                }
+            }
+        }
+    });
+    // await processMessages(await getMessages(CHANNEL_ID));
+
+
+
+
+    const sleep = (ms) => new Promise(rs => setTimeout(rs, ms))
+    const keepAlive = async () => {
+        const check = async (client) => {
+            !(async () => {
+                while (1) {
+                    await sleep(100);
+                    if (!client.connected) {
+
+                        await Promise.race([
+                            client.connect(),
+                            sleep(1000)
+                        ])
+
+                        if (!client.connected) process.exit(0)
+                    }
+                }
+            })()
+
+            !(async () => {
+                while (1) {
+                    await sleep(30 * 1000);
+                    if (await client.checkAuthorization()) {
+                        await client.getMe()
+                    }
+                }
+            })()
+        }
+
+        check(client1);
+        check(client2);
     };
 
     keepAlive();
 
 })();
-
+/*
 process.on('uncaughtException', (e) => {
     console.error(e)
-})
+})*/

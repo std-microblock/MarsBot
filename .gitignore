@@ -11,6 +11,8 @@ marsBot.db
 media
 venv
 __pycache__
-lastId.txt
+lastId*
 yarn-error.log
 cleanout/data
+*.json
+*.json.bak
