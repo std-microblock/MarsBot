@@ -16,3 +16,5 @@ yarn-error.log
 cleanout/data
 *.json
 *.json.bak
+data
+puppeteer_profile

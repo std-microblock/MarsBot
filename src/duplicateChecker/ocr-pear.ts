@@ -1,8 +1,8 @@
 import { ocrSpace } from 'ocr-space-api-wrapper';
-import { CheckerGenerateContext } from './types';
+import { CheckerGenerateContext, GetDuplicatesContext, GetDuplicatesResult } from './types';
 import { compareTwoStrings } from 'string-similarity';
 import filetype from 'magic-bytes.js'
-import { readFileSync } from 'fs';
+import { readFileSync, rmdirSync } from 'fs';
 
 import puppeteer, { Browser } from 'puppeteer';
 import { RequestInterceptionManager } from 'puppeteer-intercept-and-modify-requests'
@@ -12,17 +12,21 @@ import { promisePool } from '../promise-pool';
 let recognize: (img: string) => Promise<string> = (img) => { throw Error("Not initialized") };
 let browser: Browser | undefined;
 async function initializeOCR(pages = 5) {
-    if (browser) browser.close();
+    if (browser){
+        browser.close();
+        await new Promise(rs=>setTimeout(rs,5000));
+    }
     browser = undefined
     browser = await puppeteer.launch({
-        headless: false
+        headless: true,
+       // userDataDir: __dirname+'/puppeteer_profile'
     });
 
     const newPage = async () => {
         const page = await browser!.newPage();
         page.setViewport({
-            width: 1000,
-            height: 800
+            width: 10,
+            height: 80
         })
 
         const client = await page.target().createCDPSession()
@@ -77,7 +81,7 @@ async function initializeOCR(pages = 5) {
     recognize = (img) => {
         return pool.addTask(async (i) => {
             const page = pending.findIndex(v => !v);
-            if(page === -1) throw "No page available"
+            if (page === -1) throw "No page available"
             console.log("Using page", page)
             pending[page] = true;
             const res = await pagesRecognizeFunc[page](img);
@@ -117,35 +121,59 @@ export const generate = async ({
     return 'No Result'
 }
 
-export const checkDuplicate = async (s1: string, s2: string) => {
-    if ([s1, s2].some(v => v === 'No Result')) return {
-        isDuplicated: false,
-        confidence: 0
-    }
-
-    const d = compareTwoStrings(s1, s2);
-    if (d > 0.65) {
-        const res = await fetch(`${MARS_PY_API_BASE}/text_similarity`, {
-            method: "POST",
-            body: JSON.stringify({
-                "text1": s1,
-                "text2": s2
-            }),
-            headers: {
-                "Content-Type": "application/json"
+export const getDuplicates = async (id: string, hash: string, ctx: GetDuplicatesContext): Promise<GetDuplicatesResult[]> => {
+    const res = await (await fetch("http://127.0.0.1:5000/text/find_closest", {
+        body: JSON.stringify(
+            {
+                "text": hash
             }
-        }).then(r => r.json());
-        if (res.similarity_score > 0.8) {
-            return {
-                isDuplicated: true,
-                confidence: (d - 0.65) / (1 - 0.65),
-                message: `(<b>AI</b> ${Math.round(res.similarity_score * 1000) / 10}%) `
-            }
-        }
-    }
+        ),
+        headers: {
+            "Content-Type": "application/json"
+        },
+        method: "POST"
+    })).json()
 
-    return {
-        isDuplicated: false,
-        confidence: (d - 0.8) / 0.2
-    }
+    return res.map((v: any) => ({
+        msgId: v.id.split('-')[1],
+        confidence: v.score
+    })).filter((v: any) => {
+        const beforeMsg = ctx.getBeforeResult(v.msgId);
+        if (!beforeMsg) return false;
+        const d = compareTwoStrings(beforeMsg.hash, hash)
+        return d > 0.65
+    })
 }
+
+// export const checkDuplicate = async (s1: string, s2: string) => {
+//     if ([s1, s2].some(v => v === 'No Result')) return {
+//         isDuplicated: false,
+//         confidence: 0
+//     }
+
+//     const d = compareTwoStrings(s1, s2);
+//     if (d > 0.65) {
+//         const res = await fetch(`${MARS_PY_API_BASE}/text_similarity`, {
+//             method: "POST",
+//             body: JSON.stringify({
+//                 "text1": s1,
+//                 "text2": s2
+//             }),
+//             headers: {
+//                 "Content-Type": "application/json"
+//             }
+//         }).then(r => r.json());
+//         if (res.similarity_score > 0.8) {
+//             return {
+//                 isDuplicated: true,
+//                 confidence: (d - 0.65) / (1 - 0.65),
+//                 message: `(<b>AI</b> ${Math.round(res.similarity_score * 1000) / 10}%) `
+//             }
+//         }
+//     }
+
+//     return {
+//         isDuplicated: false,
+//         confidence: (d - 0.8) / 0.2
+//     }
+// }

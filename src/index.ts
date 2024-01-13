@@ -35,6 +35,7 @@ import { Profiler, profiler } from "./profiler";
 import { promisePool } from "./promise-pool";
 import { Telegraf } from "telegraf";
 import { SocksProxyAgent } from "socks-proxy-agent";
+import { GetDuplicatesContext } from "./duplicateChecker/types";
 
 const CHANNEL_ID = 'xinjingdaily';
 const CHANNEL_NUMBER_ID = 1434817225;
@@ -84,6 +85,47 @@ interface DuplicateResult {
     checker: string
 }
 
+class Mutex {
+    constructor() {
+    }
+
+    private _locked = false;
+    private _waiting: (() => void)[] = [];
+
+    async guard(fn) {
+        return await this.lockGuard(fn);
+    }
+
+    lock() {
+        return new Promise<void>((rs) => {
+            if (!this._locked) {
+                this._locked = true;
+                rs();
+            } else {
+                this._waiting.push(rs);
+            }
+        })
+    }
+
+    unlock() {
+        if (this._waiting.length > 0) {
+            const next = this._waiting.shift()!;
+            next();
+        } else {
+            this._locked = false;
+        }
+    }
+
+    async lockGuard(fn) {
+        await this.lock();
+        try {
+            return await fn();
+        } finally {
+            this.unlock();
+        }
+    }
+}
+
 const createTextStore = (name: string, defaultv?: any) => {
     let content = defaultv;
     if (existsSync(name))
@@ -97,25 +139,34 @@ const createTextStore = (name: string, defaultv?: any) => {
         }
     }
 
+    let lock = new Mutex();
     return [
         content,
-        async () => {
-            await writeFile(name + ".tmp", JSON.stringify(content, null, 4));
-            if (existsSync(name + ".bak")) await rm(name + ".bak");
-            if (existsSync(name)) await rename(name, name + ".bak");
-            await rename(name + ".tmp", name);
+        () => {
+            return lock.lockGuard(async () => {
+                await writeFile(name + ".tmp", JSON.stringify(content, null, 4));
+                if (existsSync(name + ".bak")) await rm(name + ".bak");
+                if (existsSync(name)) {
+                    try {
+                        await rename(name, name + ".bak");
+                    } catch (e) {
+                        console.error(e)
+                    }
+                }
+                await rename(name + ".tmp", name);
+            })
         }
     ]
 }
 
-let liftUpInfo = {
+let [liftUpInfo, saveLiftupInfo] = createTextStore('./liftUpInfo.json', {
     enable: false,
     lastId: 0,
     ETA: 0,
     state: '闲置',
     total: 0,
     lastProfile: '暂无'
-};
+});
 
 /**
  * [
@@ -171,13 +222,26 @@ let liftUpInfo = {
 ]
  */
 
+const escapeHtml = (str) => str.replace(/[&<>'"]/g, tag => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    "'": '&#39;',
+    '"': '&quot;'
+})[tag]);
+
+const ENABLE_CLIENT2 = true;
+
 (async () => {
-    const client1 = await createTGClient();
-    const client2 = await createTGClient("./SESSION2");
-    console.log("Client1:");
-    console.log(client1.session.save());
-    console.log("Client2:");
-    console.log(client2.session.save());
+    const client1 = await createTGClient('./SESSION1', JSON.parse(
+        existsSync('./account1.json') ? readFileSync('./account1.json', 'utf-8') || '{}' : '{}'
+    ));
+    let client2;
+    if (ENABLE_CLIENT2) client2 = await createTGClient("./SESSION2", JSON.parse(
+        existsSync('./account2.json') ? readFileSync('./account2.json', 'utf-8') || '{}' : '{}'
+    ));
+    console.log("Client1:", client1.connected);
+    console.log("Client2:", ENABLE_CLIENT2 && client2.connected);
 
     const bot = new Telegraf(readFileSync('./TOKEN', 'utf-8'), {
         telegram: { agent: new SocksProxyAgent('socks://192.168.31.1:7890/') }
@@ -186,7 +250,7 @@ let liftUpInfo = {
     const telegramBot: typeof bot.telegram = new Proxy(bot.telegram, {
         get(target, p, receiver) {
             // Check if the property is a function
-            if (typeof target[p] === 'function') {
+            if ((typeof p === 'string') && typeof target[p] === 'function') {
                 // Wrap the function with retry logic
                 return async function (...args) {
                     const maxRetries = 3; // Maximum number of retries
@@ -219,11 +283,11 @@ let liftUpInfo = {
         limit: 100,
         offsetPeer: new Api.InputPeerEmpty()
     }))
-
-    await client2.invoke(new Api.messages.GetDialogs({
-        limit: 100,
-        offsetPeer: new Api.InputPeerEmpty()
-    }))
+    if (ENABLE_CLIENT2)
+        await client2.invoke(new Api.messages.GetDialogs({
+            limit: 100,
+            offsetPeer: new Api.InputPeerEmpty()
+        }))
 
     // list all usable reactions in admin group
     // const fullChat = await client1.invoke(new Api.channels.GetFullChannel({
@@ -256,9 +320,11 @@ let liftUpInfo = {
         saveStates();
     })
 
-    const createStateMessage = async () => {
-        if (states.stateMessage) return states.stateMessage
-        // await telegramBot.deleteMessage(GROUP_BOT_ID, states.stateMessage);
+    const createStateMessage = async (force = false) => {
+        if (states.stateMessage) {
+            if (force) return states.stateMessage
+            else await bot.telegram.deleteMessage(GROUP_BOT_ID, states.stateMessage).catch(console.warn)
+        }
 
         const msg = await telegramBot.sendMessage(GROUP_BOT_ID, '查重 Bot 正在运行', {
             disable_notification: true
@@ -289,7 +355,7 @@ let liftUpInfo = {
         await telegramBot.editMessageText(GROUP_BOT_ID, stateMessage, undefined, `火星波特 ⁜ 正在运行
         [上次更新：${new Date().toLocaleString()}]
         
-        ${liftUpInfo.enable ? `${SPLITER}\n向前存储\n当前进度：${liftUpInfo.lastId}\n预计剩余时间：${(liftUpInfo.ETA / 60).toFixed(1)} 小时\n剩余消息：${liftUpInfo.total}\n当前状态：${liftUpInfo.state}\n\n上次 Profile: \n${liftUpInfo.lastProfile}` : ''}
+        ${liftUpInfo.enable ? `${SPLITER}\n向前存储\n当前进度：${liftUpInfo.lastId}\n预计剩余时间：${(liftUpInfo.ETA / 60).toFixed(1)} 小时\n剩余消息：${liftUpInfo.total}\n当前状态：${liftUpInfo.state}\n\n上次 Profile: \n${liftUpInfo.lastProfile}\n${SPLITER}` : ''}
 
         已检出：<b>${states.discoveredDuplicateTotal}</b> 条
         已确认：<b>${states.confirmedDuplicateTotal}</b> 条
@@ -347,7 +413,8 @@ let liftUpInfo = {
         const mediaId = checkers.mediaId.generate({
             message: msg, client: client1,
             getMedia: async () => undefined,
-            getMediaPath: async () => undefined
+            getMediaPath: async () => undefined,
+            msgId: ''
         });
         if (!mediaId) return undefined;
         // find in __dirname/media
@@ -374,6 +441,15 @@ let liftUpInfo = {
         // @ts-ignore
         const msgId = `${message.peerId.channelId ?? message.peerId.groupId}::${message.id}`;
         if (!message.id) throw new Error("No id in message");
+
+        if (message.buttons?.flat().length ?? -1 > 0) {
+            console.log("Non-normal message(with buttons): ", msgId, "skipped")
+            return {
+                duplicateResults: [],
+                message,
+                msgId
+            }
+        }
 
         console.log("Current Message ID:", msgId)
 
@@ -413,7 +489,8 @@ let liftUpInfo = {
                         const res = await getMediaCachedPath(message, client);
                         profile.start('generate-' + checker);
                         return res;
-                    }
+                    },
+                    msgId
                 }
                 const res = await checkers[checker].generate(ctx);
 
@@ -425,32 +502,60 @@ let liftUpInfo = {
                 console.log(" = Checking: ", checker, msgId)
                 profile.start('check-' + checker)
 
-                if (result.hash)
-                    for (const before of collection.find({ id: { $ne: msgId }, hash: { $ne: null } })) {
-                        // if(msgs.find(m => m.id === before.id)?.groupedId === message.groupedId) continue;
-                        if (!before.id.startsWith(CHANNEL_NUMBER_ID) && channelOnly) continue;
-                        const ctx = {
-                            before() { return getMessageById(before.id, client) },
-                            this() { return message },
-                            client,
-                            getMediaCached,
-                            getMediaCachedPath
-                        }
-                        const checkRes: {
-                            isDuplicated: boolean,
-                            confidence: number,
-                            message?: string
-                        } = await checkers[checker].checkDuplicate(result.hash, before.hash, ctx);
+                if (result.hash) {
+                    if (checkers[checker].checkDuplicate)
+                        for (const before of collection.find({ id: { $ne: msgId }, hash: { $ne: null } })) {
+                            // if(msgs.find(m => m.id === before.id)?.groupedId === message.groupedId) continue;
+                            if (!before.id.startsWith(CHANNEL_NUMBER_ID) && channelOnly) continue;
+                            const ctx = {
+                                before() { return getMessageById(before.id, client) },
+                                this() { return message },
+                                beforeId: before.id,
+                                thisId: msgId,
+                                client,
+                                getMediaCached,
+                                getMediaCachedPath
+                            }
+                            const checkRes: {
+                                isDuplicated: boolean,
+                                confidence: number,
+                                message?: string
+                            } = await checkers[checker].checkDuplicate(result.hash, before.hash, ctx);
 
-                        if (checkRes.isDuplicated || returnFalseChecks) {
+                            if (checkRes.isDuplicated || returnFalseChecks) {
+                                duplicateResults.push({
+                                    ...checkRes,
+                                    before,
+                                    this: result,
+                                    checker
+                                });
+                            }
+                        }
+                    else if (checkers[checker].getDuplicates) {
+                        const ctx: GetDuplicatesContext = {
+                            getBeforeResult: (msgId) => {
+                                const msg = collection.findOne({ id: { $eq: msgId } });
+                                if (!msg) return null;
+                                return {
+                                    hash: msg.hash
+                                }
+                            }
+                        };
+                        const duplicates = await checkers[checker].getDuplicates(msgId, result.hash, ctx);
+                        for (const { msgId, confidence } of duplicates) {
+                            const msg = collection.findOne({ id: { $eq: msgId } });
+                            if (!msg) continue;
                             duplicateResults.push({
-                                ...checkRes,
-                                before,
+                                isDuplicated: true,
+                                confidence: confidence,
+                                before: msg,
                                 this: result,
                                 checker
-                            });
+                            })
                         }
                     }
+                }
+
 
             }
         }
@@ -473,6 +578,9 @@ let liftUpInfo = {
     let busy: Promise<undefined> | undefined = undefined;
 
 
+    bot.command('clean', ctx => {
+
+    })
 
     bot.command('help', ctx => ctx.reply(`/help - 此页面
 /search [p:页数] <正则> - 搜索
@@ -496,10 +604,14 @@ let liftUpInfo = {
         }
     } = {}
 
-    const generatePageDocument = (results, searchId, page) => {
+    const generatePageDocument = (results, searchId, page, keyword) => {
         if (typeof page === 'string') page = parseInt(page)
         const displayHash = (hash) => {
-            if (typeof hash === "string") return hash.length > 60 ? hash.replace(/\n/g, '').slice(0, 60) + '...' : hash.replace(/\n/g, ' ');
+            if (typeof hash === "string") {
+                return hash.length > 60 ?
+                    escapeHtml(hash).replace(keyword, `<b>${keyword}</b>`).replace(/\n/g, '').slice(Math.max(0, hash.indexOf(keyword) - 20), hash.indexOf(keyword) + 60) + '...' :
+                    escapeHtml(hash).replace(keyword, `<b>${keyword}</b>`).replace(/\n/g, ' ');
+            }
             if (hash instanceof Array) return hash.map(v => displayHash(v)).join(',');
             if (hash instanceof Object) {
                 if (hash.label && hash.confidence) {
@@ -573,6 +685,30 @@ ${displayHash(r.hash)}`).join('\n\n')
                 // 没有不包含的
                 addResult(collection.where(v => !targetLabels.some(tLabel => !v.hash.some(({ label }) => label === tLabel))));
 
+            } else if (checker === 'text' || checker === 'ocr') {
+                const res = await (await fetch("http://127.0.0.1:5000/text/find_closest", {
+                    body: JSON.stringify(
+                        {
+                            "text": queryText
+                        }
+                    ),
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    method: "POST"
+                })).json()
+
+                addResult(res.map(v => ({
+                    id: v.id.split('-')[1],
+                    hash: collection.findOne({ id: { $eq: v.id.split('-')[1] } })?.hash
+                })).filter(v => v.hash))
+
+                const res2 = collection.find({
+                    'hash': {
+                        $regex: queryText
+                    }
+                }).filter(v => !res.some(r => r.id.endsWith(v.id)));
+                addResult(res2);
             } else {
                 const res = collection.find({
                     'hash': {
@@ -602,6 +738,12 @@ ${displayHash(r.hash)}`).join('\n\n')
         }
     })
 
+    bot.command('rm', (ctx) => {
+        if (ctx.message.reply_to_message)
+            ctx.deleteMessage(ctx.message.reply_to_message.message_id);
+        ctx.deleteMessage(ctx.message.message_id)
+    })
+
     bot.action('removeMsg', ctx => ctx.deleteMessage(ctx.message).catch(() => { }))
 
     bot.action(/pagination:searchData-(\S+)-(\S+)/, async ctx => {
@@ -621,21 +763,27 @@ ${displayHash(r.hash)}`).join('\n\n')
         })
     })
 
-    bot.command('ping', ctx => ctx.reply('pong!'))
+    bot.command('ping', ctx => {
+        ctx.reply('pong')
+    })
 
     const checkLiftUp = async () => {
-        const targetId = 100
-        const interval = 10
+        if (!ENABLE_CLIENT2) {
+            liftUpInfo.state = '未启用账号二，无法向上爬取';
+            return;
+        }
+        const targetId = 130494
+        const interval = 30
         let lastUsedTime = 0;
         while (liftUpInfo.enable) {
             const profile = profiler('liftup')
-            const lastId = existsSync('lastId.txt') ? parseInt(readFileSync('lastId.txt', 'utf-8')!) : undefined;
-            liftUpInfo.lastId = lastId!;
+            const lastId = liftUpInfo.lastId;
             const ETA = Math.round(((lastId ?? 10000000) - targetId) / 50 * (lastUsedTime / 1000 / 60))
             liftUpInfo.total = (lastId ?? 10000000) - targetId;
             liftUpInfo.ETA = ETA;
             if (lastId && (lastId < 30 || lastId < targetId)) {
                 liftUpInfo.enable = false;
+                await saveLiftupInfo();
                 updateStateMessage();
                 console.log("[ LiftUp ] Finished!");
                 break
@@ -659,8 +807,8 @@ ${displayHash(r.hash)}`).join('\n\n')
                 return async () => {
                     console.log("before exec: id:", message.id, "index:", i, msgs[i][0].id)
                     liftUpInfo.state = `检查中 (${i} / ${msgs.length})`
-                    writeFileSync('lastId.txt', message.id.toString());
-
+                    liftUpInfo.lastId = parseInt(message.id.toString());
+                    await saveLiftupInfo();
                     for (let i = 0; i < 3; i++) {
                         try {
                             await checkMessage(message, client, false, { nocheck: true, profile });
@@ -672,8 +820,6 @@ ${displayHash(r.hash)}`).join('\n\n')
                     }
                 }
             })).promise;
-
-            writeFileSync('lastId.txt', (Math.min(...messages.map(v => v.id))).toString());
             liftUpInfo.state = '等待';
             updateStateMessage();
             profile.start('wait')
@@ -681,21 +827,30 @@ ${displayHash(r.hash)}`).join('\n\n')
             const end = Date.now();
             lastUsedTime = end - start;
             liftUpInfo.lastProfile = profile.endPrint()
+            await saveLiftupInfo();
         }
     }
 
     checkLiftUp()
 
-    bot.command('liftup', ctx => {
+    bot.command('liftup', async ctx => {
         const startFrom = parseInt(ctx.args[0] || '-1')
         if (liftUpInfo.enable) {
             liftUpInfo.enable = false;
+            await saveLiftupInfo();
             ctx.reply("已关闭向上爬取")
         } else if (startFrom > 0 && !Number.isNaN(startFrom)) {
-            writeFileSync('./lastId,txt', startFrom.toString())
+            liftUpInfo.lastId = startFrom
+            await saveLiftupInfo();
             liftUpInfo.enable = true;
             checkLiftUp()
             ctx.reply(`已开启向上爬取，将从 t.me/${CHANNEL_ID}/${startFrom} 开始继续爬取`);
+        } else if (ctx.args[0] === 'latest') {
+            liftUpInfo.enable = true;
+            checkLiftUp()
+            delete liftUpInfo.lastId;
+            await saveLiftupInfo();
+            ctx.reply(`已开启向上爬取，将从最新消息开始爬取`);
         } else {
             liftUpInfo.enable = true;
             checkLiftUp()
@@ -759,7 +914,7 @@ ${displayHash(r.hash)}`).join('\n\n')
 
         const autoReject = channelId === ADMIN_GROUP_ID.toString()
 
-        if (duplicateResults.some(r => r.before.id.startsWith(CHANNEL_NUMBER_ID.toString())) && duplicateResults.length < 10) {
+        if (duplicateResults.some(r => r.before.id.startsWith(CHANNEL_NUMBER_ID.toString()) && r.before.id !== r.this.id) && duplicateResults.length < 10) {
             // skip if no duplicated in channel
 
             const dupMap = {};
@@ -783,7 +938,7 @@ ${autoReject ? '向该消息回应👍表情以拒稿' : '请手动撤稿/拒稿
 
             const dupTipsMsg = await client.sendMessage(ADMIN_GROUP_ID, {
                 message: dupMsg,
-                replyTo: channelId === ADMIN_GROUP_ID ? msg : undefined,
+                replyTo: channelId === ADMIN_GROUP_ID.toString() ? msg : undefined,
                 parseMode: 'html',
             });
 
@@ -872,7 +1027,7 @@ ${autoReject ? '向该消息回应👍表情以拒稿' : '请手动撤稿/拒稿
                 const { duplicateResults, message: msg2, msgId } = res
                 duplicateResults.sort((a, b) => b.confidence - a.confidence)
                 console.log("Total:", duplicateResults.length)
-                telegramBot.editMessageText(GROUP_BOT_ID, checkingTips.message_id, undefined, `检查结果：\n\n${duplicateResults.filter(v => v.confidence > 0).slice(0, 30).map(r => `${getIdLink(r.this.id)} <b>${r.checker}</b> 检出 ${Math.ceil(r.confidence * 100)}%`).join('\n')}`, {
+                telegramBot.editMessageText(GROUP_BOT_ID, checkingTips.message_id, undefined, `检查结果：\n\n${duplicateResults.filter(v => v.confidence > 0).slice(0, 30).map(r => `${getIdLink(r.before.id)} <b>${r.checker}</b> 检出 ${Math.ceil(r.confidence * 100)}%`).join('\n')}`, {
                     parse_mode: "HTML"
                 })
             } catch (e) {
@@ -991,7 +1146,8 @@ ${autoReject ? '向该消息回应👍表情以拒稿' : '请手动撤稿/拒稿
         }
 
         check(client1);
-        check(client2);
+        if (ENABLE_CLIENT2)
+            check(client2);
     };
 
     keepAlive();

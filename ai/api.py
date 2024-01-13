@@ -5,20 +5,34 @@ from image_similarity import ImageSimilarity
 app = Flask(__name__)
 
 text_similarity = TextSimilarity()
+text_similarity.load_embeddings()
 image_similarity = ImageSimilarity()
 
-@app.route('/text_similarity', methods=['POST'])
-def calculate_text_similarity():
+@app.route('/text/save_text_embedding', methods=['POST'])
+def save_text_embedding():
     data = request.get_json()
-    text1 = data['text1']
-    text2 = data['text2']
+    text = data['text']
+    ide = data['id']
     
-    similarity_score = text_similarity.calculate_similarity(text1, text2)
+    text_similarity.encode(text, ide)
+    return "OK"
+
+@app.route('/text/save_and_find_closest', methods=['POST'])
+def save_and_find_closest():
+    data = request.get_json()
+    text = data['text']
+    ide = data['id']
     
-    response = {
-        'similarity_score': similarity_score
-    }
-    return jsonify(response)
+    text_similarity.encode(text, ide)
+    return jsonify(text_similarity.find_closest10(text))
+
+@app.route('/text/find_closest', methods=['POST'])
+def find_closest():
+    data = request.get_json()
+    text = data['text']
+    
+    return jsonify(text_similarity.find_closest10(text))
+
 
 @app.route('/image_similarity', methods=['POST'])
 def calculate_image_similarity():
@@ -34,4 +48,5 @@ def calculate_image_similarity():
 
 
 if __name__ == '__main__':
-    app.run()
+    app.run(port=
+            5000)

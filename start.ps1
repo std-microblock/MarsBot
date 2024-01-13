@@ -1,0 +1,1 @@
+while(1){node daemon.js;echo("stopped");sleep(15);}

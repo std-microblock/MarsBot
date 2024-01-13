@@ -8,7 +8,13 @@ const apiId = 24862414;
 const apiHash = "1745670d4621f50d831db069ecc40285";
 
 
-export const createTGClient: (session?: string) => Promise<TelegramClient> = async (session = "./SESSION") => {
+export const createTGClient = async (session = "./SESSION", {
+    phone,
+    passwd,
+} = {
+        phone: "",
+        passwd: ""
+    }) => {
     const stringSession = new StringSession(existsSync(session) ? readFileSync(session, 'utf-8') : '');
     const client = new TelegramClient(stringSession, apiId, apiHash, {
         connectionRetries: Infinity,
@@ -22,8 +28,8 @@ export const createTGClient: (session?: string) => Promise<TelegramClient> = asy
         }
     });
     await client.start({
-        phoneNumber: async () => await input.text(session + "\nPlease enter your number: "),
-        password: async () => await input.text("Please enter your password: "),
+        phoneNumber: async () => phone || await input.text(session + "\nPlease enter your number: "),
+        password: async () => passwd || await input.text("Please enter your password: "),
         phoneCode: async () =>
             await input.text("Please enter the code you received: "),
         onError: (err) => console.log(err),
